@@ -60,12 +60,13 @@ final class TraceableHookCompilerPass implements CompilerPassInterface
             }
         }
 
-        if (!$container->hasDefinition(TraceableHookSubscriber::class)) {
+        $traceableHookSubscriberId = TraceableHookSubscriber::class;
+        if (!$container->hasDefinition($traceableHookSubscriberId)) {
             return;
         }
 
         $container
-            ->getDefinition(TraceableHookSubscriber::class)
+            ->getDefinition($traceableHookSubscriberId)
             ->setArgument('$hooks', array_values($hooks));
     }
 

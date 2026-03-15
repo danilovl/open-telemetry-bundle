@@ -12,9 +12,7 @@
     "require": {
         "php": "^8.5",
         "ext-opentelemetry": "*",
-        "symfony/framework-bundle": "^8.0",
         "symfony/http-kernel": "^8.0",
-        "symfony/http-client": "^8.0",
         "symfony/config": "^8.0",
         "symfony/dependency-injection": "^8.0",
         "open-telemetry/api": "^1.8",
@@ -24,6 +22,9 @@
         "nyholm/psr7": "^1.8"
     },
     "require-dev": {
+        "symfony/framework-bundle": "^8.0",
+        "symfony/http-client": "^8.0",
+        "symfony/console": "^8.0",
         "phpunit/phpunit": "^12.5.6",
         "phpstan/extension-installer": "^1.4.3",
         "phpstan/phpstan": "^2.1.33",
@@ -39,6 +40,18 @@
         "ext-redis": "*",
         "doctrine/orm": "^3.4.4",
         "symfony/yaml": "^8.0"
+    },
+    "suggest": {
+        "symfony/framework-bundle": "For full Symfony integration",
+        "symfony/http-client": "For HTTP client instrumentation",
+        "symfony/console": "For Console instrumentation",
+        "symfony/messenger": "For Messenger instrumentation",
+        "symfony/mailer": "For Mailer instrumentation",
+        "symfony/event-dispatcher": "For EventDispatcher instrumentation",
+        "twig/twig": "For Twig instrumentation",
+        "doctrine/doctrine-bundle": "For Doctrine instrumentation",
+        "danilovl/async-bundle": "For Async instrumentation",
+        "predis/predis": "For Redis instrumentation"
     },
     "autoload": {
         "psr-4": {

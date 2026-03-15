@@ -114,6 +114,7 @@ class OpenTelemetryExtension extends Extension
         $resourceDefinition->setFactory([new Reference(DefaultResourceInfoFactory::class), 'createResource']);
         $container->setDefinition('danilovl.open_telemetry.resource_info', $resourceDefinition);
 
+        $this->registerInstrumentationServices($container);
         $this->validateDependencies($instrumentation);
 
         foreach ($this->getDisableConfigurations($instrumentation) as [$enabled, $serviceId]) {
@@ -378,6 +379,42 @@ class OpenTelemetryExtension extends Extension
             $this->isInstrumentationMeteringEnabled($instrumentationConfig);
     }
 
+    private function registerInstrumentationServices(ContainerBuilder $container): void
+    {
+        $classes = [
+            HttpRequestTracingSubscriber::class,
+            HttpTracingMiddleware::class,
+            MessageBusTracingMiddleware::class,
+            MessengerFlushSubscriber::class,
+            AsyncTracingSubscriber::class,
+            TracingRedis::class,
+            TracingCachePool::class,
+            ConsoleTracingSubscriber::class,
+            MailerTracingSubscriber::class,
+            TracingEventDispatcher::class,
+            TraceableSubscriber::class,
+            TraceableHookSubscriber::class,
+            TracingDbalMiddleware::class,
+            TraceableTwigExtension::class,
+            DefaultEventTraceIgnore::class,
+            DefaultEventSpanNameHandler::class,
+            DefaultDoctrineTraceIgnore::class,
+            DefaultDoctrineSpanNameHandler::class,
+            DefaultHttpRequestTraceIgnore::class,
+        ];
+
+        foreach ($classes as $class) {
+            if (!class_exists($class)) {
+                continue;
+            }
+
+            $container->register($class, $class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true)
+                ->setPublic(false);
+        }
+    }
+
     private function validateDependencies(InstrumentationConfig $instrumentation): void
     {
         foreach ($this->getInstrumentationDependencies() as $key => ['type' => $type, 'name' => $dependency, 'message' => $message]) {
@@ -430,6 +467,11 @@ class OpenTelemetryExtension extends Extension
     private function getInstrumentationDependencies(): array
     {
         return [
+            'http_server' => [
+                'type' => 'interface',
+                'name' => 'Symfony\Component\EventDispatcher\EventDispatcherInterface',
+                'message' => 'The "symfony/http-kernel" package is required for HttpServer instrumentation.'
+            ],
             'redis' => [
                 'type' => 'extension',
                 'name' => 'redis',
@@ -474,6 +516,11 @@ class OpenTelemetryExtension extends Extension
                 'type' => 'interface',
                 'name' => 'Symfony\Contracts\HttpClient\HttpClientInterface',
                 'message' => 'The "symfony/http-client" package is required for HttpClient instrumentation.'
+            ],
+            'console' => [
+                'type' => 'class',
+                'name' => 'Symfony\Component\Console\Application',
+                'message' => 'The "symfony/console" package is required for Console instrumentation.'
             ],
         ];
     }
