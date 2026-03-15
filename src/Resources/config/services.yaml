@@ -1,0 +1,17 @@
+services:
+  _defaults:
+    autowire: true
+    autoconfigure: true
+
+  Danilovl\OpenTelemetryBundle\:
+    resource: '../../*'
+    exclude:
+      - '../../DependencyInjection'
+      - '../../Instrumentation/**/Metrics'
+      - '../../Instrumentation/**/LongRunningCommand'
+      - '../../Instrumentation/Interfaces'
+      - '../../Model'
+      - '../../OpenTelemetry/Attribute'
+      - '../../OpenTelemetry/Helper'
+      - '../../OpenTelemetry/Interfaces'
+      - '../../OpenTelemetry/Service/MetricsRecorder.php'

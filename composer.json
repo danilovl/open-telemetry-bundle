@@ -1,0 +1,70 @@
+{
+    "name": "danilovl/open-telemetry-bundle",
+    "description": "OpenTelemetry bundle for Symfony",
+    "type": "symfony-bundle",
+    "keywords": ["php","symfony","bundle","symfony"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Vladimir Danilov"
+        }
+    ],
+    "require": {
+        "php": "^8.5",
+        "ext-opentelemetry": "*",
+        "symfony/framework-bundle": "^8.0",
+        "symfony/http-kernel": "^8.0",
+        "symfony/config": "^8.0",
+        "symfony/dependency-injection": "^8.0",
+        "open-telemetry/api": "^1.8",
+        "open-telemetry/exporter-otlp": "^1.4",
+        "open-telemetry/sdk": "^1.8",
+        "open-telemetry/sem-conv": "^1.38",
+        "nyholm/psr7": "^1.8"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.5.6",
+        "phpstan/extension-installer": "^1.4.3",
+        "phpstan/phpstan": "^2.1.33",
+        "phpstan/phpstan-symfony": "^2.0.9",
+        "friendsofphp/php-cs-fixer": "^3.92.5",
+        "twig/twig": "^3.23",
+        "symfony/messenger": "^8.0",
+        "symfony/http-client": "^8.0",
+        "symfony/mailer": "^8.0",
+        "doctrine/doctrine-bundle": "^3.2",
+        "danilovl/async-bundle": "^1.0",
+        "predis/predis": "^3.4",
+        "guzzlehttp/guzzle": "^7.10",
+        "ext-redis": "*",
+        "doctrine/orm": "^3.4.4",
+        "symfony/yaml": "^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Danilovl\\OpenTelemetryBundle\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Danilovl\\OpenTelemetryBundle\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "tests": "vendor/bin/phpunit tests/Unit tests/Integration tests/Functional",
+        "tests-unit": "vendor/bin/phpunit tests/Unit",
+        "tests-integration": "vendor/bin/phpunit tests/Integration",
+        "tests-functional": "vendor/bin/phpunit tests/Functional",
+        "phpstan": "phpstan analyse -c phpstan.neon src tests --no-progress",
+        "phpstan-generate-baseline": "@php vendor/bin/phpstan analyse --level 9  --configuration phpstan.neon  src/ tests/ --generate-baseline",
+        "cs-fixer": "vendor/bin/php-cs-fixer fix --allow-risky=yes",
+        "cs-fixer-check": "vendor/bin/php-cs-fixer fix --dry-run --allow-risky=yes"
+    },
+    "config": {
+        "allow-plugins": {
+            "phpstan/extension-installer": true,
+            "php-http/discovery": true,
+            "tbachert/spi": true
+        }
+    }
+}
