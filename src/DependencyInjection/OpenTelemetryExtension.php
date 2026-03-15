@@ -181,12 +181,18 @@ class OpenTelemetryExtension extends Extension
 
             $container->register(DefaultMessengerSpanNameHandler::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->addTag(InstrumentationTags::MESSENGER_SPAN_NAME_HANDLER);
 
             if ($instrumentation->messenger->longRunningCommandEnabled) {
                 $container->register(MessengerFlushSubscriber::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true);
+
+                $container->register(DefaultLongRunningCommand::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND);
             }
         }
 
@@ -223,13 +229,15 @@ class OpenTelemetryExtension extends Extension
             if ($instrumentation->doctrine->defaultTraceIgnoreEnabled) {
                 $container->register(DefaultDoctrineTraceIgnore::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::DOCTRINE_TRACE_IGNORE);
             }
 
             if ($instrumentation->doctrine->defaultSpanNameHandlerEnabled) {
                 $container->register(DefaultDoctrineSpanNameHandler::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::DOCTRINE_SPAN_NAME_HANDLER);
             }
         }
 
@@ -247,13 +255,15 @@ class OpenTelemetryExtension extends Extension
             if ($instrumentation->events->defaultTraceIgnoreEnabled) {
                 $container->register(DefaultEventTraceIgnore::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::EVENT_TRACE_IGNORE);
             }
 
             if ($instrumentation->events->defaultSpanNameHandlerEnabled) {
                 $container->register(DefaultEventSpanNameHandler::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::EVENT_SPAN_NAME_HANDLER);
             }
         }
 
@@ -265,7 +275,8 @@ class OpenTelemetryExtension extends Extension
             if ($this->isInstrumentationEnabled($instrumentation->messenger) && $this->checkDependency($deps['messenger'])) {
                 $container->register(MessengerConsumeTraceIgnore::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::CONSOLE_TRACE_IGNORE);
             }
         }
 
@@ -287,7 +298,8 @@ class OpenTelemetryExtension extends Extension
             if ($instrumentation->httpServer->defaultTraceIgnoreEnabled) {
                 $container->register(DefaultHttpRequestTraceIgnore::class)
                     ->setAutowired(true)
-                    ->setAutoconfigured(true);
+                    ->setAutoconfigured(true)
+                    ->addTag(InstrumentationTags::HTTP_REQUEST_TRACE_IGNORE);
             }
         }
     }
