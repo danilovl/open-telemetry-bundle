@@ -18,14 +18,14 @@ You can:
 Kibana
 ------------
 
-![Alt text](//readme/kibana.png?raw=true "Kibana")
+![Alt text](/readme/kibana.png?raw=true "Kibana")
 
 Metrics
 ------------
 
-![Alt text](//readme/metrics.png?raw=true "Metrics")
+![Alt text](/readme/metrics.png?raw=true "Metrics")
 
-![Alt text](//readme/metrics-all.png?raw=true "Metrics all")
+![Alt text](/readme/metrics-all.png?raw=true "Metrics all")
 
 
 ## Requirements
