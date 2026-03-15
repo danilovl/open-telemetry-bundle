@@ -58,8 +58,6 @@ class TestKernel extends Kernel
             ],
         ]);
 
-        $container->removeDefinition('console.error_listener');
-
         $container->register(TestController::class)
             ->addTag('controller.service_arguments')
             ->setPublic(true);
@@ -132,6 +130,12 @@ class TestKernel extends Kernel
 
                 if ($container->hasDefinition('event_dispatcher')) {
                     $container->getDefinition('event_dispatcher')->setPublic(true);
+                }
+
+                if ($container->hasDefinition('console.error_listener')) {
+                    $container->getDefinition('console.error_listener')
+                        ->setPublic(true)
+                        ->setArgument(0, null);
                 }
             }
         });

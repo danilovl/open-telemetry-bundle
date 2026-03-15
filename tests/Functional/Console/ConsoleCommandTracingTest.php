@@ -13,6 +13,7 @@ use OpenTelemetry\API\Trace\StatusCode;
 use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Tester\ApplicationTester;
+use Throwable;
 
 class ConsoleCommandTracingTest extends TestCase
 {
@@ -104,9 +105,20 @@ class ConsoleCommandTracingTest extends TestCase
     {
         $application = new Application(static::$kernel);
         $application->setAutoExit(false);
+        $application->setCatchExceptions(false);
 
         $tester = new ApplicationTester($application);
-        $tester->run(['command' => 'test:error']);
+
+        $exceptionThrown = false;
+
+        try {
+            $tester->run(['command' => 'test:error']);
+        } catch (Throwable $e) {
+            $exceptionThrown = true;
+            $this->assertSame('Test error message', $e->getMessage());
+        }
+
+        $this->assertTrue($exceptionThrown, 'Exception should be thrown when catchExceptions is false');
 
         $consoleSpan = $this->findSpan('console test:error');
         $this->assertNotNull($consoleSpan, 'Console span "console test:error" was not created');
