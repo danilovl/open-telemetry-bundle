@@ -41,6 +41,8 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\{
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Interfaces\MessengerMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\LongRunningCommand\DefaultLongRunningCommand;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Metrics\DefaultMessengerMetrics;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\TraceIgnore\MessengerConsumeTraceIgnore;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\SpanNameHandler\DefaultMessengerSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\{
     TraceableHookSubscriber,
     TraceableSubscriber
@@ -114,7 +116,6 @@ class OpenTelemetryExtension extends Extension
         $resourceDefinition->setFactory([new Reference(DefaultResourceInfoFactory::class), 'createResource']);
         $container->setDefinition('danilovl.open_telemetry.resource_info', $resourceDefinition);
 
-        $this->registerInstrumentationServices($container);
         $this->validateDependencies($instrumentation);
 
         foreach ($this->getDisableConfigurations($instrumentation) as [$enabled, $serviceId]) {
@@ -279,6 +280,8 @@ class OpenTelemetryExtension extends Extension
             [$httpClientEnabled, HttpTracingMiddleware::class],
             [$traceableEnabled, TraceableSubscriber::class],
             [$traceableEnabled, TraceableHookSubscriber::class],
+            [$consoleEnabled, MessengerConsumeTraceIgnore::class],
+            [$messengerEnabled, DefaultMessengerSpanNameHandler::class],
             [true, TracerShutdownSubscriber::class],
         ];
     }
@@ -379,42 +382,6 @@ class OpenTelemetryExtension extends Extension
             $this->isInstrumentationMeteringEnabled($instrumentationConfig);
     }
 
-    private function registerInstrumentationServices(ContainerBuilder $container): void
-    {
-        $classes = [
-            HttpRequestTracingSubscriber::class,
-            HttpTracingMiddleware::class,
-            MessageBusTracingMiddleware::class,
-            MessengerFlushSubscriber::class,
-            AsyncTracingSubscriber::class,
-            TracingRedis::class,
-            TracingCachePool::class,
-            ConsoleTracingSubscriber::class,
-            MailerTracingSubscriber::class,
-            TracingEventDispatcher::class,
-            TraceableSubscriber::class,
-            TraceableHookSubscriber::class,
-            TracingDbalMiddleware::class,
-            TraceableTwigExtension::class,
-            DefaultEventTraceIgnore::class,
-            DefaultEventSpanNameHandler::class,
-            DefaultDoctrineTraceIgnore::class,
-            DefaultDoctrineSpanNameHandler::class,
-            DefaultHttpRequestTraceIgnore::class,
-        ];
-
-        foreach ($classes as $class) {
-            if (!class_exists($class)) {
-                continue;
-            }
-
-            $container->register($class, $class)
-                ->setAutowired(true)
-                ->setAutoconfigured(true)
-                ->setPublic(false);
-        }
-    }
-
     private function validateDependencies(InstrumentationConfig $instrumentation): void
     {
         foreach ($this->getInstrumentationDependencies() as $key => ['type' => $type, 'name' => $dependency, 'message' => $message]) {
@@ -467,11 +434,6 @@ class OpenTelemetryExtension extends Extension
     private function getInstrumentationDependencies(): array
     {
         return [
-            'http_server' => [
-                'type' => 'interface',
-                'name' => 'Symfony\Component\EventDispatcher\EventDispatcherInterface',
-                'message' => 'The "symfony/http-kernel" package is required for HttpServer instrumentation.'
-            ],
             'redis' => [
                 'type' => 'extension',
                 'name' => 'redis',
@@ -492,20 +454,10 @@ class OpenTelemetryExtension extends Extension
                 'name' => 'Danilovl\AsyncBundle\AsyncBundle',
                 'message' => 'The "danilovl/async-bundle" package is required for Async instrumentation.'
             ],
-            'cache' => [
-                'type' => 'interface',
-                'name' => 'Psr\Cache\CacheItemPoolInterface',
-                'message' => 'The "symfony/cache" or "psr/cache" package is required for Cache instrumentation.'
-            ],
             'doctrine' => [
                 'type' => 'interface',
                 'name' => 'Doctrine\DBAL\Driver',
                 'message' => 'The "doctrine/dbal" or "doctrine/orm" package is required for Doctrine instrumentation.'
-            ],
-            'events' => [
-                'type' => 'interface',
-                'name' => 'Symfony\Component\EventDispatcher\EventDispatcherInterface',
-                'message' => 'The "symfony/event-dispatcher" package is required for Events instrumentation.'
             ],
             'mailer' => [
                 'type' => 'interface',
@@ -516,11 +468,6 @@ class OpenTelemetryExtension extends Extension
                 'type' => 'interface',
                 'name' => 'Symfony\Contracts\HttpClient\HttpClientInterface',
                 'message' => 'The "symfony/http-client" package is required for HttpClient instrumentation.'
-            ],
-            'console' => [
-                'type' => 'class',
-                'name' => 'Symfony\Component\Console\Application',
-                'message' => 'The "symfony/console" package is required for Console instrumentation.'
             ],
         ];
     }

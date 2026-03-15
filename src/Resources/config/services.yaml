@@ -7,7 +7,9 @@ services:
     resource: '../../*'
     exclude:
       - '../../DependencyInjection'
-      - '../../Instrumentation'
+      - '../../Instrumentation/**/Metrics'
+      - '../../Instrumentation/**/LongRunningCommand'
+      - '../../Instrumentation/Interfaces'
       - '../../Model'
       - '../../OpenTelemetry/Attribute'
       - '../../OpenTelemetry/Helper'
