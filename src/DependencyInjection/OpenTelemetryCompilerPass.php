@@ -14,6 +14,9 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Mailer\Interfaces\Maile
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Interfaces\MessengerMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\Interfaces\TraceableMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpClient\HttpTracingMiddleware;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\TracingEventDispatcher;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\MessageBusTracingMiddleware;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use OpenTelemetry\SDK\Trace\TracerProviderInterface;
@@ -21,7 +24,8 @@ use LogicException;
 use Symfony\Component\DependencyInjection\{
     Reference,
     Definition,
-    ContainerBuilder
+    ContainerBuilder,
+    ContainerInterface
 };
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
@@ -35,6 +39,9 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
     {
         $this->registerMessengerMiddleware($container);
         $this->registerHttpClientDecorator($container);
+        $this->registerEventDispatcherDecorator($container);
+        $this->registerCacheDecorator($container);
+        $this->registerRedisDecorator($container);
         $this->overrideInterfaceAliasesByUserImplementations($container);
         $this->registerTracerProviderProcessors($container);
     }
@@ -117,6 +124,39 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
 
             $container->setDefinition($newId, $definition);
         }
+    }
+
+    private function registerEventDispatcherDecorator(ContainerBuilder $container): void
+    {
+        $id = TracingEventDispatcher::class;
+        if (!$container->hasDefinition($id) || !$container->hasDefinition('event_dispatcher')) {
+            return;
+        }
+
+        $container->getDefinition($id)
+            ->setDecoratedService('event_dispatcher');
+    }
+
+    private function registerCacheDecorator(ContainerBuilder $container): void
+    {
+        $id = TracingCachePool::class;
+        if (!$container->hasDefinition($id) || !$container->hasDefinition('cache.app')) {
+            return;
+        }
+
+        $container->getDefinition($id)
+            ->setDecoratedService('cache.app');
+    }
+
+    private function registerRedisDecorator(ContainerBuilder $container): void
+    {
+        $id = TracingRedis::class;
+        if (!$container->hasDefinition($id) || !$container->hasDefinition('redis_session')) {
+            return;
+        }
+
+        $container->getDefinition($id)
+            ->setDecoratedService('redis_session', null, 0, ContainerInterface::IGNORE_ON_INVALID_REFERENCE);
     }
 
     /**

@@ -26,8 +26,6 @@ use OpenTelemetry\SemConv\Attributes\{
 };
 use RuntimeException;
 use Symfony\Component\DependencyInjection\Attribute\{
-    AsDecorator,
-    AutowireDecorated,
     AutowireIterator
 };
 use Symfony\Component\HttpClient\AsyncDecoratorTrait;
@@ -43,7 +41,6 @@ use Symfony\Contracts\HttpClient\{
 use Symfony\Contracts\Service\ResetInterface;
 use Throwable;
 
-#[AsDecorator(decorates: HttpClientInterface::class, priority: 1_000)]
 final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
 {
     use AsyncDecoratorTrait;
@@ -54,7 +51,6 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
      * @param iterable<HttpClientTraceIgnoreInterface> $httpClientTraceIgnores
      */
     public function __construct(
-        #[AutowireDecorated]
         private HttpClientInterface $client,
         private readonly CachedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::HTTP_CLIENT_ATTRIBUTE_PROVIDER)]

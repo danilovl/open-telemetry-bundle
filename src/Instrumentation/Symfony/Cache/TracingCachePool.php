@@ -22,13 +22,10 @@ use Psr\Cache\CacheItemInterface;
 use Symfony\Component\Cache\Adapter\AdapterInterface;
 use Symfony\Component\Cache\CacheItem;
 use Symfony\Component\DependencyInjection\Attribute\{
-    AsDecorator,
-    AutowireDecorated,
     AutowireIterator
 };
 use Throwable;
 
-#[AsDecorator(decorates: 'cache.app')]
 final class TracingCachePool implements AdapterInterface
 {
     /**
@@ -37,7 +34,6 @@ final class TracingCachePool implements AdapterInterface
      * @param iterable<CacheTraceIgnoreInterface> $cacheTraceIgnores
      */
     public function __construct(
-        #[AutowireDecorated]
         private AdapterInterface $inner,
         private readonly CachedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::CACHE_ATTRIBUTE_PROVIDER)]

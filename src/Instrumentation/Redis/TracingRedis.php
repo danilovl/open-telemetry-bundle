@@ -27,14 +27,10 @@ use Redis;
 use RuntimeException;
 use Stringable;
 use Symfony\Component\DependencyInjection\Attribute\{
-    AsDecorator,
-    AutowireDecorated,
     AutowireIterator
 };
-use Symfony\Component\DependencyInjection\ContainerInterface;
 use Throwable;
 
-#[AsDecorator(decorates: 'redis_session', onInvalid: ContainerInterface::IGNORE_ON_INVALID_REFERENCE)]
 final class TracingRedis implements ClientInterface
 {
     /**
@@ -43,7 +39,6 @@ final class TracingRedis implements ClientInterface
      * @param iterable<RedisTraceIgnoreInterface> $redisTraceIgnores
      */
     public function __construct(
-        #[AutowireDecorated]
         private Redis|ClientInterface $redis,
         private readonly CachedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::REDIS_ATTRIBUTE_PROVIDER)]

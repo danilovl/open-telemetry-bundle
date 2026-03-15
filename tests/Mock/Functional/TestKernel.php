@@ -18,7 +18,6 @@ use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\TraceIgnore\MessengerConsumeTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Controller\TestController;
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Command\{
     ErrorCommand,
@@ -79,11 +78,6 @@ class TestKernel extends Kernel
 
         $container->register(MessengerConsumeCommand::class)
             ->addTag('console.command')
-            ->setPublic(true);
-
-        $container->register(MessengerConsumeTraceIgnore::class)
-            ->setAutowired(true)
-            ->setAutoconfigured(true)
             ->setPublic(true);
     }
 

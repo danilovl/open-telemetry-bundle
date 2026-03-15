@@ -43,6 +43,7 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\LongRunningCo
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Metrics\DefaultMessengerMetrics;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\TraceIgnore\MessengerConsumeTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\SpanNameHandler\DefaultMessengerSpanNameHandler;
+use OpenTelemetry\Context\{Context, ContextStorageInterface};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\{
     TraceableHookSubscriber,
     TraceableSubscriber
@@ -56,8 +57,6 @@ use Danilovl\OpenTelemetryBundle\Model\Configuration\{
     MessengerInstrumentationConfig,
 };
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
-use Danilovl\OpenTelemetryBundle\OpenTelemetry\EventSubscriber\TracerShutdownSubscriber;
-use OpenTelemetry\Context\ContextStorageInterface;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\{
     MetricsRecorderInterface,
     TracingSpanServiceInterface
@@ -118,13 +117,7 @@ class OpenTelemetryExtension extends Extension
 
         $this->validateDependencies($instrumentation);
 
-        foreach ($this->getDisableConfigurations($instrumentation) as [$enabled, $serviceId]) {
-            $this->disableIfFalse(
-                container: $container,
-                enabled: $enabled,
-                serviceId: $serviceId,
-            );
-        }
+        $this->registerInstrumentationServices($container, $instrumentation);
 
         $this->registerCachedInstrumentation($container);
 
@@ -140,8 +133,6 @@ class OpenTelemetryExtension extends Extension
             );
         }
 
-        $this->registerMessengerMiddlewares($container);
-        $this->registerDoctrineMiddlewares($container);
         $this->registerLongRunningCommand($container, $instrumentation->messenger);
 
         $container->register(TracerProviderInterface::class, TracerProviderInterface::class)
@@ -163,13 +154,160 @@ class OpenTelemetryExtension extends Extension
         $container->setAlias(\OpenTelemetry\API\Logs\LoggerProviderInterface::class, LoggerProviderInterface::class);
 
         $container->register(ContextStorageInterface::class, ContextStorageInterface::class)
-            ->setFactory([\OpenTelemetry\Context\Context::class, 'storage'])
+            ->setFactory([Context::class, 'storage'])
             ->setPublic(false);
 
         $container->register(TracingSpanServiceInterface::class, TracingSpanService::class)
             ->setAutowired(true)
             ->setAutoconfigured(true)
             ->setPublic(true);
+    }
+
+    private function registerInstrumentationServices(ContainerBuilder $container, InstrumentationConfig $instrumentation): void
+    {
+        $deps = $this->getInstrumentationDependencies();
+
+        if ($this->isInstrumentationEnabled($instrumentation->httpClient) && $this->checkDependency($deps['http_client'])) {
+            $container->register(HttpTracingMiddleware::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->messenger) && $this->checkDependency($deps['messenger'])) {
+            $container->register(MessageBusTracingMiddleware::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true)
+                ->addTag('messenger.middleware', ['alias' => 'messenger_tracing']);
+
+            $container->register(DefaultMessengerSpanNameHandler::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+
+            if ($instrumentation->messenger->longRunningCommandEnabled) {
+                $container->register(MessengerFlushSubscriber::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->mailer) && $this->checkDependency($deps['mailer'])) {
+            $container->register(MailerTracingSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->twig) && $this->checkDependency($deps['twig'])) {
+            $container->register(TraceableTwigExtension::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->redis) && $this->checkDependency($deps['redis'])) {
+            $container->register(TracingRedis::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->async) && $this->checkDependency($deps['async'])) {
+            $container->register(AsyncTracingSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->doctrine) && $this->checkDependency($deps['doctrine'])) {
+            $container->register(TracingDbalMiddleware::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true)
+                ->addTag('doctrine.middleware');
+
+            if ($instrumentation->doctrine->defaultTraceIgnoreEnabled) {
+                $container->register(DefaultDoctrineTraceIgnore::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+
+            if ($instrumentation->doctrine->defaultSpanNameHandlerEnabled) {
+                $container->register(DefaultDoctrineSpanNameHandler::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->cache)) {
+            $container->register(TracingCachePool::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->events)) {
+            $container->register(TracingEventDispatcher::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+
+            if ($instrumentation->events->defaultTraceIgnoreEnabled) {
+                $container->register(DefaultEventTraceIgnore::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+
+            if ($instrumentation->events->defaultSpanNameHandlerEnabled) {
+                $container->register(DefaultEventSpanNameHandler::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->console) && $this->checkDependency($deps['console'])) {
+            $container->register(ConsoleTracingSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+
+            if ($this->isInstrumentationEnabled($instrumentation->messenger) && $this->checkDependency($deps['messenger'])) {
+                $container->register(MessengerConsumeTraceIgnore::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->traceable)) {
+            $container->register(TraceableSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+
+            $container->register(TraceableHookSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->httpServer)) {
+            $container->register(HttpRequestTracingSubscriber::class)
+                ->setAutowired(true)
+                ->setAutoconfigured(true);
+
+            if ($instrumentation->httpServer->defaultTraceIgnoreEnabled) {
+                $container->register(DefaultHttpRequestTraceIgnore::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+        }
+    }
+
+    /**
+     * @param array{type: string, name: string} $dep
+     */
+    private function checkDependency(array $dep): bool
+    {
+        /** @var string $type */
+        $type = $dep['type'];
+        /** @var string $dependency */
+        $dependency = $dep['name'];
+
+        return match ($type) {
+            'extension' => extension_loaded($dependency),
+            'interface' => interface_exists($dependency),
+            'class' => class_exists($dependency),
+            default => false
+        };
     }
 
     private function registerCachedInstrumentation(ContainerBuilder $container): void
@@ -207,83 +345,6 @@ class OpenTelemetryExtension extends Extension
             ->setAutoconfigured(true)
             ->setPublic(false)
             ->addTag(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND);
-    }
-
-    private function registerDoctrineMiddlewares(ContainerBuilder $container): void
-    {
-        $id = TracingDbalMiddleware::class;
-
-        if ($container->hasDefinition($id)) {
-            $container->getDefinition($id)
-                ->addTag('doctrine.middleware');
-        }
-    }
-
-    private function registerMessengerMiddlewares(ContainerBuilder $container): void
-    {
-        $id = MessageBusTracingMiddleware::class;
-
-        if ($container->hasDefinition($id)) {
-            $container->getDefinition($id)
-                ->addTag('messenger.middleware', ['alias' => 'messenger_tracing']);
-        }
-    }
-
-    /**
-     * @return array<int, array{bool, string}>
-     */
-    private function getDisableConfigurations(InstrumentationConfig $instrumentation): array
-    {
-        $httpServerEnabled = $this->isInstrumentationTracingEnabled($instrumentation->httpServer);
-        $httpClientEnabled = $this->isInstrumentationTracingEnabled($instrumentation->httpClient);
-        $eventsEnabled = $this->isInstrumentationTracingEnabled($instrumentation->events);
-        $messengerEnabled = $this->isInstrumentationTracingEnabled($instrumentation->messenger);
-        $doctrineEnabled = $this->isInstrumentationTracingEnabled($instrumentation->doctrine);
-        $consoleEnabled = $this->isInstrumentationTracingEnabled($instrumentation->console);
-        $cacheEnabled = $this->isInstrumentationTracingEnabled($instrumentation->cache);
-        $redisEnabled = $this->isInstrumentationTracingEnabled($instrumentation->redis);
-        $mailerEnabled = $this->isInstrumentationTracingEnabled($instrumentation->mailer);
-        $twigEnabled = $this->isInstrumentationTracingEnabled($instrumentation->twig);
-        $traceableEnabled = $this->isInstrumentationTracingEnabled($instrumentation->traceable);
-        $asyncEnabled = $this->isInstrumentationTracingEnabled($instrumentation->async);
-
-        $messengerLongRunning = $messengerEnabled && $instrumentation->messenger->longRunningCommandEnabled;
-
-        $eventDefaultIgnore = $instrumentation->events->defaultTraceIgnoreEnabled;
-        $eventSpanHandler = $instrumentation->events->defaultSpanNameHandlerEnabled;
-
-        $doctrineDefaultIgnore =
-            $instrumentation->doctrine->defaultTraceIgnoreEnabled
-            && interface_exists('Doctrine\Persistence\ManagerRegistry');
-
-        $doctrineSpanHandler = $instrumentation->doctrine->defaultSpanNameHandlerEnabled;
-
-        $httpDefaultIgnore = $instrumentation->httpServer->defaultTraceIgnoreEnabled;
-
-        return [
-            [$cacheEnabled, TracingCachePool::class],
-            [$messengerEnabled, MessageBusTracingMiddleware::class],
-            [$messengerLongRunning, MessengerFlushSubscriber::class],
-            [$asyncEnabled, AsyncTracingSubscriber::class],
-            [$redisEnabled, TracingRedis::class],
-            [$consoleEnabled, ConsoleTracingSubscriber::class],
-            [$twigEnabled, TraceableTwigExtension::class],
-            [$mailerEnabled, MailerTracingSubscriber::class],
-            [$eventsEnabled, TracingEventDispatcher::class],
-            [$eventDefaultIgnore, DefaultEventTraceIgnore::class],
-            [$eventSpanHandler, DefaultEventSpanNameHandler::class],
-            [$doctrineEnabled, TracingDbalMiddleware::class],
-            [$doctrineDefaultIgnore, DefaultDoctrineTraceIgnore::class],
-            [$doctrineSpanHandler, DefaultDoctrineSpanNameHandler::class],
-            [$httpDefaultIgnore, DefaultHttpRequestTraceIgnore::class],
-            [$httpServerEnabled, HttpRequestTracingSubscriber::class],
-            [$httpClientEnabled, HttpTracingMiddleware::class],
-            [$traceableEnabled, TraceableSubscriber::class],
-            [$traceableEnabled, TraceableHookSubscriber::class],
-            [$consoleEnabled, MessengerConsumeTraceIgnore::class],
-            [$messengerEnabled, DefaultMessengerSpanNameHandler::class],
-            [true, TracerShutdownSubscriber::class],
-        ];
     }
 
     private function setInstrumentationMetricsArgument(
@@ -404,28 +465,19 @@ class OpenTelemetryExtension extends Extension
         }
     }
 
-    private function isInstrumentationTracingEnabled(BaseInstrumentationConfig $instrumentationConfig): bool
-    {
-        return $instrumentationConfig->enabled && $instrumentationConfig->tracingEnabled;
-    }
-
     private function isInstrumentationMeteringEnabled(BaseInstrumentationConfig $instrumentationConfig): bool
     {
         return $instrumentationConfig->enabled && $instrumentationConfig->meteringEnabled;
     }
 
+    private function isInstrumentationTracingEnabled(BaseInstrumentationConfig $instrumentationConfig): bool
+    {
+        return $instrumentationConfig->enabled && $instrumentationConfig->tracingEnabled;
+    }
+
     private function resolveGlobalMeterName(): string
     {
         return 'danilovl/open-telemetry';
-    }
-
-    private function disableIfFalse(ContainerBuilder $container, bool $enabled, string $serviceId): void
-    {
-        if ($enabled || !$container->hasDefinition($serviceId)) {
-            return;
-        }
-
-        $container->removeDefinition($serviceId);
     }
 
     /**
@@ -468,6 +520,11 @@ class OpenTelemetryExtension extends Extension
                 'type' => 'interface',
                 'name' => 'Symfony\Contracts\HttpClient\HttpClientInterface',
                 'message' => 'The "symfony/http-client" package is required for HttpClient instrumentation.'
+            ],
+            'console' => [
+                'type' => 'class',
+                'name' => 'Symfony\Component\Console\Application',
+                'message' => 'The "symfony/console" package is required for Console instrumentation.'
             ],
         ];
     }
