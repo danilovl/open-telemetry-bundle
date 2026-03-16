@@ -9,6 +9,7 @@ use Danilovl\OpenTelemetryBundle\Model\Configuration\{
     HttpServerInstrumentationConfig,
     InstrumentationConfig,
     MessengerInstrumentationConfig,
+    PRedisInstrumentationConfig,
 };
 use Generator;
 use InvalidArgumentException;
@@ -49,6 +50,7 @@ class InstrumentationConfigTest extends TestCase
         $this->assertInstanceOf(BaseInstrumentationConfig::class, $result->cache);
         $this->assertInstanceOf(DoctrineInstrumentationConfig::class, $result->doctrine);
         $this->assertInstanceOf(BaseInstrumentationConfig::class, $result->redis);
+        $this->assertInstanceOf(PRedisInstrumentationConfig::class, $result->predis);
         $this->assertInstanceOf(BaseInstrumentationConfig::class, $result->mailer);
         $this->assertInstanceOf(EventsInstrumentationConfig::class, $result->events);
         $this->assertInstanceOf(BaseInstrumentationConfig::class, $result->async);
@@ -92,6 +94,7 @@ class InstrumentationConfigTest extends TestCase
             'cache' => self::baseSection($enabled),
             'doctrine' => self::baseSection($enabled) + ['default_trace_ignore_enabled' => $enabled, 'default_span_name_handler_enabled' => $enabled],
             'redis' => self::baseSection($enabled),
+            'predis' => self::baseSection($enabled),
             'mailer' => self::baseSection($enabled),
             'events' => self::baseSection($enabled) + ['default_trace_ignore_enabled' => $enabled, 'default_span_name_handler_enabled' => $enabled],
             'async' => self::baseSection($enabled),
@@ -109,6 +112,7 @@ class InstrumentationConfigTest extends TestCase
         yield 'cache' => ['cache', BaseInstrumentationConfig::class];
         yield 'doctrine' => ['doctrine', DoctrineInstrumentationConfig::class];
         yield 'redis' => ['redis', BaseInstrumentationConfig::class];
+        yield 'predis' => ['predis', PRedisInstrumentationConfig::class];
         yield 'mailer' => ['mailer', BaseInstrumentationConfig::class];
         yield 'events' => ['events', EventsInstrumentationConfig::class];
         yield 'async' => ['async', BaseInstrumentationConfig::class];

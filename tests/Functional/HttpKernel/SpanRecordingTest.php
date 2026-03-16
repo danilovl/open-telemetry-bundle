@@ -5,7 +5,8 @@ namespace Danilovl\OpenTelemetryBundle\Tests\Functional\HttpKernel;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Trace\DefaultTracerProviderFactory;
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Provider\{
     RecordingTracerProvider,
-    RecordingTracerProviderFactory};
+    RecordingTracerProviderFactory
+};
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\TestKernel;
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Trace\{
     RecordingSpan

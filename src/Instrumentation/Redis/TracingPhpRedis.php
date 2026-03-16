@@ -12,7 +12,10 @@ use OpenTelemetry\SemConv\Attributes\{
     ErrorAttributes
 };
 use OpenTelemetry\Context\Context;
+use Stringable;
+use Throwable;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\{
+    TracingPhpRedisInterface,
     RedisAttributeProviderInterface,
     RedisMetricsInterface,
     RedisSpanNameHandlerInterface,
@@ -21,13 +24,10 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\{
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
 use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
-use Predis\ClientInterface;
-use Predis\Command\CommandInterface;
-use Stringable;
+use Redis;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
-use Throwable;
 
-final class TracingRedis implements ClientInterface
+final class TracingPhpRedis implements TracingPhpRedisInterface
 {
     /**
      * @param iterable<RedisAttributeProviderInterface> $redisAttributeProviders
@@ -35,7 +35,7 @@ final class TracingRedis implements ClientInterface
      * @param iterable<RedisTraceIgnoreInterface> $redisTraceIgnores
      */
     public function __construct(
-        protected readonly ClientInterface $redis,
+        protected readonly Redis $redis,
         private readonly CachedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::REDIS_ATTRIBUTE_PROVIDER)]
         private readonly iterable $redisAttributeProviders = [],
@@ -69,13 +69,12 @@ final class TracingRedis implements ClientInterface
         return $this->trace('GET', $key, fn () => $this->redis->get($key));
     }
 
-    public function set(string $key, mixed $value, int $expireResolution = 0): bool
+    /**
+     * @param int|array<string|int, mixed> $timeout
+     */
+    public function set(string $key, mixed $value, int|array $timeout = []): bool
     {
-        if ($expireResolution > 0) {
-            return (bool) $this->setex($key, $expireResolution, $value);
-        }
-
-        return (bool) $this->trace('SET', $key, fn () => $this->redis->set($key, $value));
+        return (bool) $this->trace('SET', $key, fn () => $this->redis->set($key, $value, $timeout));
     }
 
     public function setex(string $key, int $seconds, mixed $value): mixed
@@ -84,71 +83,18 @@ final class TracingRedis implements ClientInterface
     }
 
     /**
-     * @param string|array<int, string> $keyOrKeys
-     * @param string ...$keys
-     */
-    public function del(string|array $keyOrKeys, string ...$keys): mixed
-    {
-        $firstKey = is_array($keyOrKeys) ? (string) ($keyOrKeys[0] ?? '') : $keyOrKeys;
-
-        return $this->trace('DEL', $firstKey, fn () => $this->redis->del($keyOrKeys, ...$keys));
-    }
-
-    /**
      * @param string|array<int, string> $key
-     * @param string ...$keys
      */
-    public function unlink(string|array $key, string ...$keys): mixed
+    public function del(string|array $key, string ...$otherKeys): int
     {
         $firstKey = is_array($key) ? (string) ($key[0] ?? '') : $key;
 
-        /** @phpstan-ignore-next-line */
-        return $this->trace('UNLINK', $firstKey, fn () => $this->redis->unlink($key, ...$keys));
+        return (int) $this->trace('DEL', $firstKey, fn () => $this->redis->del($key, ...$otherKeys));
     }
 
-    public function expire(string $key, int $seconds): mixed
+    public function expire(string $key, int $seconds): bool
     {
-        return $this->trace('EXPIRE', $key, fn () => $this->redis->expire($key, $seconds));
-    }
-
-    public function getCommandFactory()
-    {
-        return $this->redis->getCommandFactory();
-    }
-
-    public function getOptions()
-    {
-        return $this->redis->getOptions();
-    }
-
-    public function connect(): void
-    {
-        $this->redis->connect();
-    }
-
-    public function disconnect(): void
-    {
-        $this->redis->disconnect();
-    }
-
-    public function getConnection()
-    {
-        return $this->redis->getConnection();
-    }
-
-    /**
-     * @param string $method
-     * @param array<int|string, mixed> $arguments
-     * @return mixed
-     */
-    public function createCommand($method, $arguments = [])
-    {
-        return $this->redis->createCommand($method, $arguments);
-    }
-
-    public function executeCommand(CommandInterface $command)
-    {
-        return $this->trace($command->getId(), '', fn () => $this->redis->executeCommand($command));
+        return (bool) $this->trace('EXPIRE', $key, fn () => $this->redis->expire($key, $seconds));
     }
 
     /**
@@ -156,9 +102,9 @@ final class TracingRedis implements ClientInterface
      * @param array<int, mixed> $arguments
      * @return mixed
      */
-    public function __call($method, $arguments)
+    public function __call(string $method, array $arguments)
     {
-        $command = mb_strtoupper((string) $method);
+        $command = mb_strtoupper($method);
         $key = '';
 
         if (array_key_exists(0, $arguments) && (is_scalar($arguments[0]) || $arguments[0] instanceof Stringable)) {
@@ -198,7 +144,7 @@ final class TracingRedis implements ClientInterface
             ->setAttribute(DbAttributes::DB_OPERATION_NAME, mb_strtoupper($command))
             ->setAttribute('db.redis.key', $key)
             ->setAttribute('class', $this->redis::class)
-            ->setAttribute('type', 'predis')
+            ->setAttribute('type', 'redis')
             ->startSpan();
 
         SpanAttributeEnricher::enrich(

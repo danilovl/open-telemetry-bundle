@@ -16,7 +16,13 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\Interfaces\Tr
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpClient\HttpTracingMiddleware;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\TracingEventDispatcher;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
+use ReflectionException;
+use ReflectionMethod;
+use ReflectionNamedType;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
+    TracingRedis,
+    TracingPhpRedis
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\MessageBusTracingMiddleware;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use OpenTelemetry\SDK\Trace\TracerProviderInterface;
@@ -24,8 +30,7 @@ use LogicException;
 use Symfony\Component\DependencyInjection\{
     Reference,
     Definition,
-    ContainerBuilder,
-    ContainerInterface
+    ContainerBuilder
 };
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
@@ -42,6 +47,7 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
         $this->registerEventDispatcherDecorator($container);
         $this->registerCacheDecorator($container);
         $this->registerRedisDecorator($container);
+        $this->registerPRedisDecorator($container);
         $this->overrideInterfaceAliasesByUserImplementations($container);
         $this->registerTracerProviderProcessors($container);
     }
@@ -150,13 +156,116 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
 
     private function registerRedisDecorator(ContainerBuilder $container): void
     {
-        $id = TracingRedis::class;
-        if (!$container->hasDefinition($id) || !$container->hasDefinition('redis_session')) {
+        if (!$container->hasDefinition(TracingPhpRedis::class)) {
             return;
         }
 
-        $container->getDefinition($id)
-            ->setDecoratedService('redis_session', null, 0, ContainerInterface::IGNORE_ON_INVALID_REFERENCE);
+        $registered = false;
+        foreach ($container->getDefinitions() as $serviceId => $definition) {
+            if (
+                $definition->isAbstract() ||
+                str_starts_with($serviceId, 'danilovl.open_telemetry') ||
+                str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
+            ) {
+                continue;
+            }
+
+            $class = $this->resolveDefinitionClass($container, $serviceId);
+            if ($class === null) {
+                continue;
+            }
+
+            if (!is_a($class, 'Redis', true)) {
+                continue;
+            }
+
+            $decoratorId = $serviceId . '.otel_tracing';
+            $container->setDefinition($decoratorId, clone $container->getDefinition(TracingPhpRedis::class))
+                ->setDecoratedService($serviceId)
+                ->setArgument('$redis', new Reference($decoratorId . '.inner'));
+
+            if (!$registered) {
+                $this->registerDefaultRedisAlias($container, 'Redis', $decoratorId);
+                $registered = true;
+            }
+        }
+
+        if (!$registered) {
+            $predisCount = 0;
+            foreach ($container->getDefinitions() as $serviceId => $definition) {
+                if (
+                    $definition->isAbstract() ||
+                    str_starts_with($serviceId, 'danilovl.open_telemetry') ||
+                    str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
+                ) {
+                    continue;
+                }
+
+                $class = $this->resolveDefinitionClass($container, $serviceId);
+                if ($class !== null && is_a($class, 'Predis\ClientInterface', true)) {
+                    $predisCount++;
+                }
+            }
+
+            if ($predisCount > 0) {
+                throw new LogicException(sprintf(
+                    'Redis instrumentation is enabled but no such services were found. However, %d services of type "predis" were found.',
+                    $predisCount
+                ));
+            }
+
+            throw new LogicException('Redis instrumentation is enabled but no Redis services were found in the container.');
+        }
+    }
+
+    private function registerPRedisDecorator(ContainerBuilder $container): void
+    {
+        if (!$container->hasDefinition(TracingRedis::class)) {
+            return;
+        }
+
+        $registered = false;
+        foreach ($container->getDefinitions() as $serviceId => $definition) {
+            if (
+                $definition->isAbstract() ||
+                str_starts_with($serviceId, 'danilovl.open_telemetry') ||
+                str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
+            ) {
+                continue;
+            }
+
+            $class = $this->resolveDefinitionClass($container, $serviceId);
+            if ($class === null) {
+                continue;
+            }
+
+            if (!is_a($class, 'Predis\ClientInterface', true)) {
+                continue;
+            }
+
+            $decoratorId = $serviceId . '.otel_tracing';
+            $container->setDefinition($decoratorId, clone $container->getDefinition(TracingRedis::class))
+                ->setDecoratedService($serviceId)
+                ->setArgument('$redis', new Reference($decoratorId . '.inner'));
+
+            if (!$registered) {
+                $this->registerDefaultRedisAlias($container, 'Predis\ClientInterface', $decoratorId);
+                $registered = true;
+            }
+        }
+    }
+
+    private function registerDefaultRedisAlias(
+        ContainerBuilder $container,
+        string $targetClass,
+        string $decoratorId
+    ): void {
+        $aliasId = 'danilovl.open_telemetry.instrumentation.redis.default';
+        $container->setAlias($aliasId, $decoratorId)->setPublic(true);
+
+        if (!$container->hasAlias($targetClass) && !$container->hasDefinition($targetClass)) {
+            $container->setAlias($targetClass, $decoratorId)->setPublic(true);
+        }
     }
 
     /**
@@ -339,18 +448,44 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
             return null;
         }
 
-        $class = $container->getDefinition($serviceId)->getClass();
+        $definition = $container->getDefinition($serviceId);
+        $class = $definition->getClass();
 
-        if (!is_string($class) || $class === '') {
+        if ($class !== null) {
+            $class = $container->getParameterBag()->resolveValue($class);
+        }
+
+        if ($class === null || $class === '') {
+            $factory = $definition->getFactory();
+            if (is_array($factory) && isset($factory[0])) {
+                $factoryClass = null;
+
+                if ($factory[0] instanceof Reference) {
+                    $factoryClass = $this->resolveDefinitionClass($container, (string) $factory[0]);
+                } elseif (is_string($factory[0])) {
+                    $factoryClass = $container->getParameterBag()->resolveValue($factory[0]);
+                }
+
+                if (is_string($factoryClass) && class_exists($factoryClass)) {
+                    $method = $factory[1];
+
+                    try {
+                        $reflectionMethod = new ReflectionMethod($factoryClass, $method);
+                        $returnType = $reflectionMethod->getReturnType();
+                        if ($returnType instanceof ReflectionNamedType) {
+                            $class = $returnType->getName();
+                        }
+                    } catch (ReflectionException) {
+                        // ignore
+                    }
+                }
+            }
+        }
+
+        if (!is_string($class) || $class === '' || !class_exists($class)) {
             return null;
         }
 
-        $resolvedClass = $container->getParameterBag()->resolveValue($class);
-
-        if (!is_string($resolvedClass) || $resolvedClass === '' || !class_exists($resolvedClass)) {
-            return null;
-        }
-
-        return $resolvedClass;
+        return $class;
     }
 }

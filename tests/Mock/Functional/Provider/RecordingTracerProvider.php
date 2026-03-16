@@ -4,7 +4,8 @@ namespace Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Provider;
 
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Trace\{
     RecordingSpan,
-    RecordingTracer};
+    RecordingTracer
+};
 use OpenTelemetry\API\Trace\TracerInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Common\InstrumentationScope\Configurator;

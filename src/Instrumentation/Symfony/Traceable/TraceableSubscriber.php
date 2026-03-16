@@ -11,7 +11,8 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\Interfaces\{
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\{
     SpanAttributeEnricher,
-    TracingHelper};
+    TracingHelper
+};
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
 use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
 use OpenTelemetry\API\Trace\{

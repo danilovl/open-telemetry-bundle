@@ -12,12 +12,16 @@ final readonly class DefaultRedisMetrics implements RedisMetricsInterface
 
     private MetricsRecorderInterface $metricsRecorder;
 
+    private string $dbSystem;
+
     public function __construct(
         bool $isEnable,
         MetricsRecorderInterface $metricsRecorder,
+        string $dbSystem = 'redis',
     ) {
         $this->isEnable = $isEnable;
         $this->metricsRecorder = $metricsRecorder;
+        $this->dbSystem = $dbSystem;
     }
 
     public function recordCommand(string $command, float $durationMs): void
@@ -27,7 +31,7 @@ final readonly class DefaultRedisMetrics implements RedisMetricsInterface
         }
 
         $attributes = [
-            'db.system' => 'redis',
+            'db.system' => $this->dbSystem,
             'db.redis.command' => $command,
         ];
 
@@ -49,7 +53,7 @@ final readonly class DefaultRedisMetrics implements RedisMetricsInterface
         }
 
         $attributes = [
-            'db.system' => 'redis',
+            'db.system' => $this->dbSystem,
             'db.redis.command' => $command,
             'error.type' => $exception::class,
         ];

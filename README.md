@@ -3,7 +3,7 @@
 [![latest Stable Version](https://img.shields.io/packagist/v/danilovl/open-telemetry-bundle)](https://packagist.org/packages/danilovl/open-telemetry-bundle)
 [![license](https://img.shields.io/packagist/l/danilovl/open-telemetry-bundle)](https://packagist.org/packages/danilovl/open-telemetry-bundle)
 
-# OpenTelemetry Bundle for Symfony
+# OpenTelemetryBundle
 
 `danilovl/open-telemetry-bundle` is a configurable Symfony bundle that integrates OpenTelemetry tracing and metrics into common Symfony and infrastructure flows.
 
@@ -161,6 +161,13 @@ danilovl_open_telemetry:
                 enabled: false
 
         redis:
+            enabled: true
+            tracing:
+                enabled: true
+            metering:
+                enabled: false
+
+        predis:
             enabled: true
             tracing:
                 enabled: true
@@ -552,7 +559,7 @@ interface DoctrineMetricsInterface
 
 ### What it does
 
-Decorates the `redis_session` service (Predis `ClientInterface` or native `Redis`). Creates one `CLIENT` span per Redis command.
+Automatically decorates all services implementing native PHP `Redis` class. Creates one `CLIENT` span per Redis command.
 
 Traced commands: `GET`, `SET`, `SETEX`, `DEL`, `UNLINK`, `EXPIRE`, and any `__call` passthrough.
 
@@ -642,7 +649,105 @@ interface RedisMetricsInterface
 
 | Class | Description |
 |-------|-------------|
-| `DefaultRedisMetrics` | Records `redis.client.requests_total`, `redis.client.duration_ms`, `redis.client.memory_usage`, `redis.client.errors_total` |
+| `DefaultRedisMetrics` | Records `redis.client.requests_total`, `redis.client.duration_ms`, `redis.client.memory_usage`, `redis.client.errors_total`; `db.system` attribute is set to `redis` |
+
+---
+
+## Instrumentation: predis
+
+### What it does
+
+Automatically decorates all services implementing `Predis\ClientInterface`. Creates one `CLIENT` span per Redis command.
+
+Traced commands: `GET`, `SET`, `SETEX`, `DEL`, `UNLINK`, `EXPIRE`, and any `__call` passthrough.
+
+### Configuration
+
+```yaml
+instrumentation:
+    predis:
+        enabled: true
+        tracing:
+            enabled: true
+        metering:
+            enabled: false
+```
+
+### Span attributes
+
+| Attribute | Source |
+|-----------|--------|
+| `db.system.name` | `predis` |
+| `db.operation.name` | command name (e.g. `GET`, `SET`) |
+| `db.redis.key` | cache key |
+| `error.type` | exception class on error |
+
+### Interfaces
+
+#### `RedisSpanNameHandlerInterface`
+
+Service tag: `danilovl.open_telemetry.redis.span_name_handler`
+
+```php
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisSpanNameHandlerInterface;
+
+class MyPredisSpanNameHandler implements RedisSpanNameHandlerInterface
+{
+    public function process(string $spanName, string $command, string $key): string
+    {
+        return sprintf('predis.%s %s', strtolower($command), $key);
+    }
+}
+```
+
+#### `RedisTraceIgnoreInterface`
+
+Service tag: `danilovl.open_telemetry.redis.trace_ignore`
+
+```php
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisTraceIgnoreInterface;
+
+class MyPredisTraceIgnore implements RedisTraceIgnoreInterface
+{
+    public function shouldIgnore(string $spanName, string $command, string $key): bool
+    {
+        return $command === 'PING';
+    }
+}
+```
+
+#### `RedisAttributeProviderInterface`
+
+Service tag: `danilovl.open_telemetry.redis.attribute_provider`
+
+```php
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisAttributeProviderInterface;
+
+class MyPredisAttributeProvider implements RedisAttributeProviderInterface
+{
+    public function provide(array $context): array
+    {
+        // $context['command'], $context['key']
+        return ['app.cache.prefix' => 'session'];
+    }
+}
+```
+
+#### `RedisMetricsInterface`
+
+```php
+interface RedisMetricsInterface
+{
+    public function recordCommand(string $command, float $durationMs): void;
+    public function recordError(string $command, Throwable $exception, float $durationMs): void;
+}
+```
+
+### Default implementations
+
+| Class | Description |
+|-------|-------------|
+| `DefaultRedisMetrics` | Records `redis.client.requests_total`, `redis.client.duration_ms`, `redis.client.memory_usage`, `redis.client.errors_total`; `db.system` attribute is set to `predis` |
 
 ---
 
@@ -1442,10 +1547,14 @@ You can inject `MetricsRecorderInterface` into your own services to record custo
 | `doctrine` | `db.client.duration_ms` | histogram | same |
 | `doctrine` | `db.client.memory_usage` | gauge | same |
 | `doctrine` | `db.client.errors_total` | counter | `db.system`, `db.operation`, `error.type` |
-| `redis` | `redis.client.requests_total` | counter | `db.system`, `db.redis.command` |
+| `redis` | `redis.client.requests_total` | counter | `db.system` (`redis`), `db.redis.command` |
 | `redis` | `redis.client.duration_ms` | histogram | same |
 | `redis` | `redis.client.memory_usage` | gauge | same |
-| `redis` | `redis.client.errors_total` | counter | `db.system`, `db.redis.command`, `error.type` |
+| `redis` | `redis.client.errors_total` | counter | `db.system` (`redis`), `db.redis.command`, `error.type` |
+| `predis` | `redis.client.requests_total` | counter | `db.system` (`predis`), `db.redis.command` |
+| `predis` | `redis.client.duration_ms` | histogram | same |
+| `predis` | `redis.client.memory_usage` | gauge | same |
+| `predis` | `redis.client.errors_total` | counter | `db.system` (`predis`), `db.redis.command`, `error.type` |
 | `cache` | `cache.requests_total` | counter | `cache.operation`, `cache.key`, `cache.hit` |
 | `cache` | `cache.duration_ms` | histogram | same |
 | `cache` | `cache.hits_total` | counter | same |

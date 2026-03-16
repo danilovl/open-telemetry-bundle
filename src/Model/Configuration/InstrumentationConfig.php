@@ -10,6 +10,8 @@ use InvalidArgumentException;
  * @phpstan-import-type MessengerInstrumentationConfigArray from MessengerInstrumentationConfig
  * @phpstan-import-type DoctrineInstrumentationConfigArray from DoctrineInstrumentationConfig
  * @phpstan-import-type EventsInstrumentationConfigArray from EventsInstrumentationConfig
+ * @phpstan-import-type RedisInstrumentationConfigArray from RedisInstrumentationConfig
+ * @phpstan-import-type PRedisInstrumentationConfigArray from PRedisInstrumentationConfig
  * @phpstan-type InstrumentationConfigArray array{
  *     http_server: HttpServerInstrumentationConfigArray,
  *     messenger: MessengerInstrumentationConfigArray,
@@ -18,14 +20,14 @@ use InvalidArgumentException;
  *     twig: BaseInstrumentationConfigArray,
  *     cache: BaseInstrumentationConfigArray,
  *     doctrine: DoctrineInstrumentationConfigArray,
- *     redis: BaseInstrumentationConfigArray,
+ *     redis: RedisInstrumentationConfigArray,
+ *     predis: PRedisInstrumentationConfigArray,
  *     mailer: BaseInstrumentationConfigArray,
  *     events: EventsInstrumentationConfigArray,
  *     async: BaseInstrumentationConfigArray,
  *     http_client: BaseInstrumentationConfigArray
  * }
  */
-
 final readonly class InstrumentationConfig
 {
     public function __construct(
@@ -36,7 +38,8 @@ final readonly class InstrumentationConfig
         public BaseInstrumentationConfig $twig,
         public BaseInstrumentationConfig $cache,
         public DoctrineInstrumentationConfig $doctrine,
-        public BaseInstrumentationConfig $redis,
+        public RedisInstrumentationConfig $redis,
+        public PRedisInstrumentationConfig $predis,
         public BaseInstrumentationConfig $mailer,
         public EventsInstrumentationConfig $events,
         public BaseInstrumentationConfig $async,
@@ -56,6 +59,7 @@ final readonly class InstrumentationConfig
         $cache = $config['cache'];
         $doctrine = $config['doctrine'];
         $redis = $config['redis'];
+        $predis = $config['predis'];
         $mailer = $config['mailer'];
         $events = $config['events'];
         $async = $config['async'];
@@ -69,7 +73,8 @@ final readonly class InstrumentationConfig
             twig: BaseInstrumentationConfig::fromConfig($twig),
             cache: BaseInstrumentationConfig::fromConfig($cache),
             doctrine: DoctrineInstrumentationConfig::fromConfig($doctrine),
-            redis: BaseInstrumentationConfig::fromConfig($redis),
+            redis: RedisInstrumentationConfig::fromConfig($redis),
+            predis: PRedisInstrumentationConfig::fromConfig($predis),
             mailer: BaseInstrumentationConfig::fromConfig($mailer),
             events: EventsInstrumentationConfig::fromConfig($events),
             async: BaseInstrumentationConfig::fromConfig($async),
@@ -88,6 +93,7 @@ final readonly class InstrumentationConfig
             'cache' => $this->cache,
             'doctrine' => $this->doctrine,
             'redis' => $this->redis,
+            'predis' => $this->predis,
             'mailer' => $this->mailer,
             'events' => $this->events,
             'async' => $this->async,

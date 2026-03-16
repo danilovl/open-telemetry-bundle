@@ -106,6 +106,12 @@ class DefaultHttpRequestTraceIgnoreTest extends TestCase
         $this->assertFalse($this->traceIgnore->shouldIgnore('span', $event));
     }
 
+    public function testNotIgnoredWhenPathIsExact_profiler(): void
+    {
+        $event = $this->makeEvent('/_profiler');
+        $this->assertFalse($this->traceIgnore->shouldIgnore('span', $event));
+    }
+
     public function testMultipleCallsSameEventReturnSameResult(): void
     {
         $event = $this->makeEvent('/_wdt/abc');
@@ -129,6 +135,9 @@ class DefaultHttpRequestTraceIgnoreTest extends TestCase
         yield '/_wdt/ deeply nested' => ['/_wdt/a/b/c/d/e'];
         yield '/_wdt/ with dash' => ['/_wdt/some-token-123'];
         yield '/_wdt/ with underscore' => ['/_wdt/some_section/detail'];
+        yield '/_profiler/foo' => ['/_profiler/foo'];
+        yield '/_profiler/ root' => ['/_profiler/'];
+        yield '/_profiler/ nested' => ['/_profiler/toolbar/abc'];
     }
 
     public static function provideNotIgnoredPathsCases(): Generator
@@ -136,7 +145,6 @@ class DefaultHttpRequestTraceIgnoreTest extends TestCase
         yield '/api/users' => ['/api/users'];
         yield '/' => ['/'];
         yield '/_wdt' => ['/_wdt'];
-        yield '/_profiler/foo' => ['/_profiler/foo'];
         yield '/app/dashboard' => ['/app/dashboard'];
         yield '/wdt/something' => ['/wdt/something'];
         yield '/api/_wdt/test' => ['/api/_wdt/test'];

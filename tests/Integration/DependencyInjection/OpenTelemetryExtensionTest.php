@@ -8,6 +8,7 @@ use Danilovl\OpenTelemetryBundle\DependencyInjection\{
 };
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\DefaultDoctrineSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\ConsoleTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\SpanNameHandler\DefaultEventSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\TraceIgnore\DefaultEventTraceIgnore;
@@ -62,6 +63,7 @@ class OpenTelemetryExtensionTest extends TestCase
                 'cache' => $off,
                 'doctrine' => $off + ['default_trace_ignore_enabled' => false, 'default_span_name_handler_enabled' => false],
                 'redis' => $off,
+                'predis' => $off,
                 'mailer' => $off,
                 'events' => $off + ['default_trace_ignore_enabled' => false, 'default_span_name_handler_enabled' => false],
                 'async' => $off,
@@ -107,7 +109,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testHttpRequestTraceIgnoreRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['http_server' => ['default_trace_ignore_enabled' => true]],
+            'instrumentation' => [
+                'http_server' => ['default_trace_ignore_enabled' => true],
+            ],
         ]);
 
         $this->assertTrue($container->hasDefinition(DefaultHttpRequestTraceIgnore::class));
@@ -116,7 +120,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testHttpRequestTraceIgnoreRemovedWhenDisabled(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['http_server' => ['default_trace_ignore_enabled' => false]],
+            'instrumentation' => [
+                'http_server' => ['default_trace_ignore_enabled' => false],
+            ],
         ]);
 
         $this->assertFalse($container->hasDefinition(DefaultHttpRequestTraceIgnore::class));
@@ -131,7 +137,7 @@ class OpenTelemetryExtensionTest extends TestCase
                     'tracing' => ['enabled' => false],
                     'metering' => ['enabled' => false],
                     'default_trace_ignore_enabled' => false
-                ]
+                ],
             ]
         ]);
 
@@ -141,7 +147,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testDoctrineSpanNameHandlerRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['doctrine' => ['default_span_name_handler_enabled' => true]]
+            'instrumentation' => [
+                'doctrine' => ['default_span_name_handler_enabled' => true],
+            ]
         ]);
 
         $this->assertTrue($container->hasDefinition(DefaultDoctrineSpanNameHandler::class));
@@ -150,7 +158,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testDoctrineSpanNameHandlerRemovedWhenDisabled(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['doctrine' => ['default_span_name_handler_enabled' => false]]
+            'instrumentation' => [
+                'doctrine' => ['default_span_name_handler_enabled' => false],
+            ]
         ]);
 
         $this->assertFalse($container->hasDefinition(DefaultDoctrineSpanNameHandler::class));
@@ -159,7 +169,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testDoctrineTraceIgnoreRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['doctrine' => ['default_trace_ignore_enabled' => true]]
+            'instrumentation' => [
+                'doctrine' => ['default_trace_ignore_enabled' => true],
+            ]
         ]);
 
         $this->assertTrue($container->hasDefinition(DefaultDoctrineTraceIgnore::class));
@@ -168,7 +180,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testDoctrineTraceIgnoreRemovedWhenDisabled(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['doctrine' => ['default_trace_ignore_enabled' => false]]
+            'instrumentation' => [
+                'doctrine' => ['default_trace_ignore_enabled' => false],
+            ]
         ]);
 
         $this->assertFalse($container->hasDefinition(DefaultDoctrineTraceIgnore::class));
@@ -177,7 +191,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testEventsSpanNameHandlerRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['events' => ['default_span_name_handler_enabled' => true]]
+            'instrumentation' => [
+                'events' => ['default_span_name_handler_enabled' => true],
+            ]
         ]);
 
         $this->assertTrue($container->hasDefinition(DefaultEventSpanNameHandler::class));
@@ -186,7 +202,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testEventsSpanNameHandlerRemovedWhenDisabled(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['events' => ['default_span_name_handler_enabled' => false]]
+            'instrumentation' => [
+                'events' => ['default_span_name_handler_enabled' => false],
+            ]
         ]);
 
         $this->assertFalse($container->hasDefinition(DefaultEventSpanNameHandler::class));
@@ -195,7 +213,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testEventsTraceIgnoreRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['events' => ['default_trace_ignore_enabled' => true]]
+            'instrumentation' => [
+                'events' => ['default_trace_ignore_enabled' => true],
+            ]
         ]);
 
         $this->assertTrue($container->hasDefinition(DefaultEventTraceIgnore::class));
@@ -204,7 +224,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testEventsTraceIgnoreRemovedWhenDisabled(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['events' => ['default_trace_ignore_enabled' => false]]
+            'instrumentation' => [
+                'events' => ['default_trace_ignore_enabled' => false],
+            ]
         ]);
 
         $this->assertFalse($container->hasDefinition(DefaultEventTraceIgnore::class));
@@ -218,7 +240,7 @@ class OpenTelemetryExtensionTest extends TestCase
                     'enabled' => false,
                     'tracing' => ['enabled' => false],
                     'metering' => ['enabled' => false]
-                ]
+                ],
             ]
         ]);
 
@@ -228,7 +250,9 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testLongRunningCommandRegisteredByDefault(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['messenger' => ['long_running_command_enabled' => true]]
+            'instrumentation' => [
+                'messenger' => ['long_running_command_enabled' => true],
+            ]
         ]);
 
         $defaultServiceId = InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default';
@@ -245,7 +269,7 @@ class OpenTelemetryExtensionTest extends TestCase
                     'enabled' => false,
                     'tracing' => ['enabled' => false],
                     'metering' => ['enabled' => false]
-                ]
+                ],
             ]
         ]);
 
@@ -257,13 +281,43 @@ class OpenTelemetryExtensionTest extends TestCase
     public function testDefaultLongRunningCommandClass(): void
     {
         $container = $this->buildContainer([
-            'instrumentation' => ['messenger' => ['long_running_command_enabled' => true]]
+            'instrumentation' => [
+                'messenger' => ['long_running_command_enabled' => true],
+            ]
         ]);
 
         $defaultServiceId = InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default';
         $definition = $container->getDefinition($defaultServiceId);
 
         $this->assertSame(DefaultLongRunningCommand::class, $definition->getClass());
+    }
+
+    public function testRedisInstrumentationRegisteredWhenEnabled(): void
+    {
+        $container = $this->buildContainer([
+            'instrumentation' => [
+                'predis' => [
+                    'enabled' => true
+                ]
+            ]
+        ]);
+
+        $this->assertTrue($container->hasDefinition(TracingRedis::class));
+    }
+
+    public function testRedisInstrumentationRemovedWhenDisabled(): void
+    {
+        $container = $this->buildContainer([
+            'instrumentation' => [
+                'predis' => [
+                    'enabled' => false,
+                    'tracing' => ['enabled' => false],
+                    'metering' => ['enabled' => false]
+                ]
+            ]
+        ]);
+
+        $this->assertFalse($container->hasDefinition(TracingRedis::class));
     }
 
     public static function provideExpectedCoreDefinitionsExistCases(): Generator

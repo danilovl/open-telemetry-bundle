@@ -12,7 +12,10 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\Defaul
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Metrics\DefaultRedisMetrics;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
+    TracingRedis,
+    TracingPhpRedis
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\Interfaces\CacheMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\Metrics\DefaultCacheMetrics;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
@@ -54,13 +57,13 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Twig\TraceableTwigExten
 use Danilovl\OpenTelemetryBundle\Model\Configuration\{
     BaseInstrumentationConfig,
     InstrumentationConfig,
-    MessengerInstrumentationConfig,
-};
+    MessengerInstrumentationConfig
+    };
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\{
     MetricsRecorderInterface,
-    TracingSpanServiceInterface
-};
+    TracerProviderFactoryInterface,
+    TracingSpanServiceInterface};
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Log\DefaultLoggerProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Metric\DefaultMeterProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Resource\DefaultResourceInfoFactory;
@@ -135,6 +138,8 @@ class OpenTelemetryExtension extends Extension
 
         $this->registerLongRunningCommand($container, $instrumentation->messenger);
 
+        $container->setAlias(TracerProviderFactoryInterface::class, DefaultTracerProviderFactory::class)
+            ->setPublic(false);
         $container->register(TracerProviderInterface::class, TracerProviderInterface::class)
             ->setFactory([new Reference(DefaultTracerProviderFactory::class), 'create'])
             ->setPublic(false);
@@ -209,9 +214,43 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->redis) && $this->checkDependency($deps['redis'])) {
-            $container->register(TracingRedis::class)
-                ->setAutowired(true)
-                ->setAutoconfigured(true);
+            if ($this->classExists('Redis')) {
+                $container->register(TracingPhpRedis::class, TracingPhpRedis::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true)
+                    ->setArgument('$instrumentation', new Reference(CachedInstrumentation::class));
+
+                $this->setInstrumentationMetricsArgument(
+                    container: $container,
+                    instrumentation: $instrumentation,
+                    serviceId: TracingPhpRedis::class,
+                    instrumentationKey: 'redis',
+                    argumentName: '$redisMetrics',
+                    metricsInterface: RedisMetricsInterface::class,
+                    defaultMetricsClass: DefaultRedisMetrics::class,
+                    extraArguments: ['$dbSystem' => 'redis'],
+                );
+            }
+        }
+
+        if ($this->isInstrumentationEnabled($instrumentation->predis) && $this->checkDependency($deps['predis'])) {
+            if ($this->interfaceExists('Predis\ClientInterface')) {
+                $container->register(TracingRedis::class, TracingRedis::class)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true)
+                    ->setArgument('$instrumentation', new Reference(CachedInstrumentation::class));
+
+                $this->setInstrumentationMetricsArgument(
+                    container: $container,
+                    instrumentation: $instrumentation,
+                    serviceId: TracingRedis::class,
+                    instrumentationKey: 'predis',
+                    argumentName: '$redisMetrics',
+                    metricsInterface: RedisMetricsInterface::class,
+                    defaultMetricsClass: DefaultRedisMetrics::class,
+                    extraArguments: ['$dbSystem' => 'predis'],
+                );
+            }
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->async) && $this->checkDependency($deps['async'])) {
@@ -305,19 +344,28 @@ class OpenTelemetryExtension extends Extension
     }
 
     /**
-     * @param array{type: string, name: string} $dep
+     * @param array{type: string, name: string|array<string, string>} $dep
      */
     private function checkDependency(array $dep): bool
     {
         /** @var string $type */
         $type = $dep['type'];
-        /** @var string $dependency */
+        /** @var string|array<string, string> $dependency */
         $dependency = $dep['name'];
 
         return match ($type) {
-            'extension' => extension_loaded($dependency),
-            'interface' => interface_exists($dependency),
-            'class' => class_exists($dependency),
+            'extension' => is_string($dependency) && $this->extensionLoaded($dependency),
+            'interface' => is_string($dependency) && $this->interfaceExists($dependency),
+            'class' => is_string($dependency) && $this->classExists($dependency),
+            'any' => is_array($dependency) && (function () use ($dependency) {
+                foreach ($dependency as $t => $d) {
+                    if ($t === 'extension' && $this->extensionLoaded($d)) return true;
+                    if ($t === 'interface' && $this->interfaceExists($d)) return true;
+                    if ($t === 'class' && $this->classExists($d)) return true;
+                }
+
+                return false;
+            })(),
             default => false
         };
     }
@@ -359,6 +407,9 @@ class OpenTelemetryExtension extends Extension
             ->addTag(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND);
     }
 
+    /**
+     * @param array<string, string> $extraArguments
+     */
     private function setInstrumentationMetricsArgument(
         ContainerBuilder $container,
         InstrumentationConfig $instrumentation,
@@ -367,6 +418,7 @@ class OpenTelemetryExtension extends Extension
         string $argumentName,
         string $metricsInterface,
         string $defaultMetricsClass,
+        array $extraArguments = [],
     ): void {
         if (!$container->hasDefinition($serviceId)) {
             return;
@@ -381,6 +433,7 @@ class OpenTelemetryExtension extends Extension
             instrumentationKey: $instrumentationKey,
             metricsInterface: $metricsInterface,
             defaultMetricsClass: $defaultMetricsClass,
+            extraArguments: $extraArguments,
         );
 
         $container
@@ -388,12 +441,16 @@ class OpenTelemetryExtension extends Extension
             ->setArgument($argumentName, $value);
     }
 
+    /**
+     * @param array<string, string> $extraArguments
+     */
     private function createMetricsReference(
         ContainerBuilder $container,
         bool $isEnable,
         string $instrumentationKey,
         string $metricsInterface,
         string $defaultMetricsClass,
+        array $extraArguments = [],
     ): Reference {
         $defaultMetricsServiceId = 'danilovl.open_telemetry.metrics.' . $instrumentationKey . '.default';
 
@@ -414,6 +471,10 @@ class OpenTelemetryExtension extends Extension
                     key: '$metricsRecorder',
                     value: $argumentValue
                 );
+
+            foreach ($extraArguments as $key => $value) {
+                $defaultMetricsDefinition->setArgument($key, $value);
+            }
 
             $container->setDefinition(
                 $defaultMetricsServiceId,
@@ -457,17 +518,39 @@ class OpenTelemetryExtension extends Extension
 
     private function validateDependencies(InstrumentationConfig $instrumentation): void
     {
-        foreach ($this->getInstrumentationDependencies() as $key => ['type' => $type, 'name' => $dependency, 'message' => $message]) {
+        foreach ($this->getInstrumentationDependencies() as $key => $dependencyConfig) {
             $instrumentationConfig = $instrumentation->getByKey($key);
 
             if (!$this->isInstrumentationEnabled($instrumentationConfig)) {
                 continue;
             }
 
+            /** @var array{type: string, name: string|array<string, string>, message: string} $dependencyConfig */
+            $type = $dependencyConfig['type'];
+            $dependency = $dependencyConfig['name'];
+            $message = $dependencyConfig['message'];
+
             $exists = match ($type) {
-                'extension' => extension_loaded($dependency),
-                'interface' => interface_exists($dependency),
-                'class' => class_exists($dependency),
+                'extension' => is_string($dependency) && $this->extensionLoaded($dependency),
+                'interface' => is_string($dependency) && $this->interfaceExists($dependency),
+                'class' => is_string($dependency) && $this->classExists($dependency),
+                'any' => is_array($dependency) && (function () use ($dependency) {
+                    foreach ($dependency as $t => $d) {
+                        if ($t === 'extension' && $this->extensionLoaded($d)) {
+                            return true;
+                        }
+
+                        if ($t === 'interface' && $this->interfaceExists($d)) {
+                            return true;
+                        }
+
+                        if ($t === 'class' && $this->classExists($d)) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                })(),
                 default => false
             };
 
@@ -493,7 +576,17 @@ class OpenTelemetryExtension extends Extension
     }
 
     /**
-     * @return array<string, array{type: string, name: string, message: string}>
+     * @return array{
+     *     redis: array{type: string, name: string, message: string},
+     *     predis: array{type: string, name: string, message: string},
+     *     messenger: array{type: string, name: string|array<string, string>, message: string},
+     *     twig: array{type: string, name: string|array<string, string>, message: string},
+     *     async: array{type: string, name: string|array<string, string>, message: string},
+     *     doctrine: array{type: string, name: string|array<string, string>, message: string},
+     *     mailer: array{type: string, name: string|array<string, string>, message: string},
+     *     http_client: array{type: string, name: string|array<string, string>, message: string},
+     *     console: array{type: string, name: string|array<string, string>, message: string},
+     * }
      */
     private function getInstrumentationDependencies(): array
     {
@@ -501,7 +594,12 @@ class OpenTelemetryExtension extends Extension
             'redis' => [
                 'type' => 'extension',
                 'name' => 'redis',
-                'message' => 'The "redis" extension is required for Redis instrumentation.'
+                'message' => 'The "redis" extension is required for Redis instrumentation with type "redis".'
+            ],
+            'predis' => [
+                'type' => 'interface',
+                'name' => 'Predis\ClientInterface',
+                'message' => 'The "predis/predis" package is required for Redis instrumentation with type "predis".'
             ],
             'messenger' => [
                 'type' => 'interface',
@@ -583,6 +681,13 @@ class OpenTelemetryExtension extends Extension
             ],
             [
                 'serviceId' => TracingRedis::class,
+                'instrumentationKey' => 'predis',
+                'argumentName' => '$redisMetrics',
+                'metricsInterface' => RedisMetricsInterface::class,
+                'defaultMetricsClass' => DefaultRedisMetrics::class
+            ],
+            [
+                'serviceId' => TracingPhpRedis::class,
                 'instrumentationKey' => 'redis',
                 'argumentName' => '$redisMetrics',
                 'metricsInterface' => RedisMetricsInterface::class,
@@ -631,5 +736,20 @@ class OpenTelemetryExtension extends Extension
                 'defaultMetricsClass' => DefaultDoctrineMetrics::class
             ],
         ];
+    }
+
+    protected function extensionLoaded(string $name): bool
+    {
+        return extension_loaded($name);
+    }
+
+    protected function interfaceExists(string $name, bool $autoload = true): bool
+    {
+        return interface_exists($name, $autoload);
+    }
+
+    protected function classExists(string $name, bool $autoload = true): bool
+    {
+        return class_exists($name, $autoload);
     }
 }

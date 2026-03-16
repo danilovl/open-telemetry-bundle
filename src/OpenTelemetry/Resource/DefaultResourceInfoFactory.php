@@ -7,7 +7,8 @@ use OpenTelemetry\SDK\Common\Attribute\Attributes;
 use OpenTelemetry\SemConv\Attributes\ServiceAttributes;
 use OpenTelemetry\SDK\Resource\{
     ResourceInfo,
-    ResourceInfoFactory};
+    ResourceInfoFactory
+};
 use OpenTelemetry\SemConv\ResourceAttributes;
 
 /**

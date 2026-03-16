@@ -5,6 +5,10 @@ namespace Danilovl\OpenTelemetryBundle\Tests\Mock\Functional;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Log\DefaultLoggerProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Metric\DefaultMeterProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Trace\DefaultTracerProviderFactory;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\{
+    TracerProviderFactoryInterface
+};
+use OpenTelemetry\SDK\Trace\TracerProviderInterface;
 use Danilovl\OpenTelemetryBundle\OpenTelemetryBundle;
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Provider\{
     MockMeterProviderFactory,
@@ -55,6 +59,16 @@ class TestKernel extends Kernel
             'router' => [
                 'resource' => 'kernel::loadRoutes',
                 'type' => 'service',
+            ],
+        ]);
+
+        $container->loadFromExtension('danilovl_open_telemetry', [
+            'instrumentation' => [
+                'redis' => [
+                    'tracing' => [
+                        'enabled' => false,
+                    ],
+                ],
             ],
         ]);
 
@@ -109,6 +123,13 @@ class TestKernel extends Kernel
                         ->setPublic(true);
                 }
 
+                if ($container->hasDefinition(TracerProviderFactoryInterface::class)) {
+                    $container->getDefinition(TracerProviderFactoryInterface::class)
+                        ->setClass(RecordingTracerProviderFactory::class)
+                        ->setArguments([])
+                        ->setPublic(true);
+                }
+
                 if ($container->hasDefinition(DefaultMeterProviderFactory::class)) {
                     $container->getDefinition(DefaultMeterProviderFactory::class)
                         ->setClass(MockMeterProviderFactory::class)
@@ -125,6 +146,16 @@ class TestKernel extends Kernel
 
                 if ($container->hasDefinition('danilovl.open_telemetry.cached_instrumentation')) {
                     $container->getDefinition('danilovl.open_telemetry.cached_instrumentation')
+                        ->setPublic(true);
+                }
+
+                if ($container->hasDefinition(TracerProviderInterface::class)) {
+                    $container->getDefinition(TracerProviderInterface::class)
+                        ->setPublic(true);
+                }
+
+                if ($container->hasDefinition(\OpenTelemetry\API\Trace\TracerProviderInterface::class)) {
+                    $container->getDefinition(\OpenTelemetry\API\Trace\TracerProviderInterface::class)
                         ->setPublic(true);
                 }
 

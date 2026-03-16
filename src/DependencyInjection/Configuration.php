@@ -21,13 +21,13 @@ final class Configuration implements ConfigurationInterface
 
         $rootChildren
             ->arrayNode('service')
-            ->addDefaultsIfNotSet()
-            ->children()
-            ->scalarNode('namespace')->defaultNull()->end()
-            ->scalarNode('name')->defaultNull()->end()
-            ->scalarNode('version')->defaultNull()->end()
-            ->scalarNode('environment')->defaultNull()->end()
-            ->end()
+                ->addDefaultsIfNotSet()
+                    ->children()
+                        ->scalarNode('namespace')->defaultNull()->end()
+                        ->scalarNode('name')->defaultNull()->end()
+                        ->scalarNode('version')->defaultNull()->end()
+                        ->scalarNode('environment')->defaultNull()->end()
+                ->end()
             ->end();
 
         $instrumentationNode = $rootChildren
@@ -81,6 +81,11 @@ final class Configuration implements ConfigurationInterface
 
         $this->appendInstrumentationNode(
             instrumentationNode: $instrumentationNode,
+            name: 'predis'
+        );
+
+        $this->appendInstrumentationNode(
+            instrumentationNode: $instrumentationNode,
             name: 'mailer'
         );
 
@@ -110,7 +115,7 @@ final class Configuration implements ConfigurationInterface
         bool $withMetering = false,
         bool $withDefaultTraceIgnore = false,
         bool $withDefaultSpanNameHandler = false,
-        bool $withLongRunningCommand = false,
+        bool $withLongRunningCommand = false
     ): void {
         $node = $instrumentationNode
             ->children()
@@ -151,11 +156,11 @@ final class Configuration implements ConfigurationInterface
 
         $node
             ->children()
-            ->arrayNode('metering')
-            ->addDefaultsIfNotSet()
-            ->children()
-            ->booleanNode('enabled')->defaultValue($meteringEnabledDefault)->end()
-            ->end()
+                ->arrayNode('metering')
+                ->addDefaultsIfNotSet()
+                    ->children()
+                    ->booleanNode('enabled')->defaultValue($meteringEnabledDefault)->end()
+                ->end()
             ->end();
 
     }

@@ -8,7 +8,8 @@ use Danilovl\OpenTelemetryBundle\Tests\Mock\Integration\Message\{
 };
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Integration\Message\{
     OrderCreatedMessage,
-    SimpleMessage};
+    SimpleMessage
+};
 use Generator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;

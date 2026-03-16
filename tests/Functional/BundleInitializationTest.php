@@ -10,7 +10,9 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Async\AsyncTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\Middleware\TracingDbalMiddleware;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\DefaultDoctrineSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
+    TracingPhpRedis
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\ConsoleTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\SpanNameHandler\DefaultEventSpanNameHandler;
@@ -374,7 +376,7 @@ class BundleInitializationTest extends TestCase
                 ],
             ],
             'expectedServices' => [
-                TracingRedis::class,
+                TracingPhpRedis::class,
                 TracingCachePool::class
             ]
         ];

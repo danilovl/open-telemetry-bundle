@@ -8,7 +8,8 @@ use Danilovl\OpenTelemetryBundle\Tests\Mock\Integration\Event\{
 };
 use Danilovl\OpenTelemetryBundle\Tests\Mock\Integration\Event\{
     OrderShippedEvent,
-    PaymentProcessedEvent};
+    PaymentProcessedEvent
+};
 use Generator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
