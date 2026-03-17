@@ -102,8 +102,7 @@ final class TracingRedis implements ClientInterface
     {
         $firstKey = is_array($key) ? (string) ($key[0] ?? '') : $key;
 
-        /** @phpstan-ignore-next-line */
-        return $this->trace('UNLINK', $firstKey, fn () => $this->redis->unlink($key, ...$keys));
+        return $this->trace('UNLINK', $firstKey, fn () => $this->redis->del($key, ...$keys));
     }
 
     public function expire(string $key, int $seconds): mixed
