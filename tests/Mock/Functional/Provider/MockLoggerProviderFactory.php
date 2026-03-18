@@ -10,7 +10,7 @@ use OpenTelemetry\SDK\Logs\{
 
 class MockLoggerProviderFactory implements LoggerProviderFactoryInterface
 {
-    public function create(): LoggerProviderInterface
+    public function create(iterable $processors = [], iterable $exporters = []): LoggerProviderInterface
     {
         return NoopLoggerProvider::getInstance();
     }

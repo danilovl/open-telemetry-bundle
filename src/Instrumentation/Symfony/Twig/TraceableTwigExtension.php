@@ -25,7 +25,15 @@ use Twig\Profiler\Profile;
 
 final class TraceableTwigExtension extends AbstractExtension
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.twig';
+
     /**
+     * Object-keyed map from Twig Profile to its active OTEL Span.
+     * SplObjectStorage is used instead of a plain array because Profile objects
+     * are passed by reference to both enter() and leave(), making them ideal keys.
+     * An array would require a string key derived from the profile, risking collisions
+     * when templates are rendered recursively with the same name.
+     *
      * @var SplObjectStorage<Profile, SpanInterface>
      */
     private SplObjectStorage $spans;

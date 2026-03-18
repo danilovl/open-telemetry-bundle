@@ -12,6 +12,9 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\Defaul
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Metrics\DefaultRedisMetrics;
+use OpenTelemetry\API\Logs\LoggerProviderInterface as APILoggerProviderInterface;
+use OpenTelemetry\API\Metrics\MeterProviderInterface as APIMeterProviderInterface;
+use OpenTelemetry\API\Trace\TracerProviderInterface as APITracerProviderInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
     TracingRedis,
     TracingPhpRedis
@@ -46,7 +49,10 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\LongRunningCo
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Metrics\DefaultMessengerMetrics;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\TraceIgnore\MessengerConsumeTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\SpanNameHandler\DefaultMessengerSpanNameHandler;
-use OpenTelemetry\Context\{Context, ContextStorageInterface};
+use OpenTelemetry\Context\{
+    Context,
+    ContextStorageInterface
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\{
     TraceableHookSubscriber,
     TraceableSubscriber
@@ -58,12 +64,25 @@ use Danilovl\OpenTelemetryBundle\Model\Configuration\{
     BaseInstrumentationConfig,
     InstrumentationConfig,
     MessengerInstrumentationConfig
-    };
+};
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\{
     MetricsRecorderInterface,
     TracerProviderFactoryInterface,
-    TracingSpanServiceInterface};
+    TracingSpanServiceInterface
+};
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Log\{
+    LogRecordExporterInterface as BundleLogRecordExporterInterface,
+    LogRecordProcessorInterface as BundleLogRecordProcessorInterface
+};
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Metric\{
+    MetricReaderInterface,
+    MetricExporterInterface
+};
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Trace\{
+    TraceSpanExporterInterface,
+    TraceSpanProcessorInterface
+};
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Log\DefaultLoggerProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Metric\DefaultMeterProviderFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Resource\DefaultResourceInfoFactory;
@@ -111,7 +130,8 @@ class OpenTelemetryExtension extends Extension
         $loader = new YamlFileLoader($container, new FileLocator(__DIR__ . '/../Resources/config'));
         $loader->load('services.yaml');
 
-        $container->getDefinition(DefaultResourceInfoFactory::class)
+        $container
+            ->getDefinition(DefaultResourceInfoFactory::class)
             ->setArgument('$serviceConfig', $config['service']);
 
         $resourceDefinition = new Definition(ResourceInfo::class);
@@ -119,9 +139,7 @@ class OpenTelemetryExtension extends Extension
         $container->setDefinition('danilovl.open_telemetry.resource_info', $resourceDefinition);
 
         $this->validateDependencies($instrumentation);
-
         $this->registerInstrumentationServices($container, $instrumentation);
-
         $this->registerCachedInstrumentation($container);
 
         foreach ($this->getInstrumentationMetricsConfigurations() as $instrumentationMetricsConfiguration) {
@@ -138,34 +156,43 @@ class OpenTelemetryExtension extends Extension
 
         $this->registerLongRunningCommand($container, $instrumentation->messenger);
 
-        $container->setAlias(TracerProviderFactoryInterface::class, DefaultTracerProviderFactory::class)
+        $container
+            ->setAlias(TracerProviderFactoryInterface::class, DefaultTracerProviderFactory::class)
             ->setPublic(false);
-        $container->register(TracerProviderInterface::class, TracerProviderInterface::class)
+
+        $container
+            ->register(TracerProviderInterface::class, TracerProviderInterface::class)
             ->setFactory([new Reference(DefaultTracerProviderFactory::class), 'create'])
             ->setPublic(false);
 
-        $container->setAlias(\OpenTelemetry\API\Trace\TracerProviderInterface::class, TracerProviderInterface::class);
+        $container->setAlias(APITracerProviderInterface::class, TracerProviderInterface::class);
 
-        $container->register(MeterProviderInterface::class, MeterProviderInterface::class)
+        $container
+            ->register(MeterProviderInterface::class, MeterProviderInterface::class)
             ->setFactory([new Reference(DefaultMeterProviderFactory::class), 'create'])
             ->setPublic(false);
 
-        $container->setAlias(\OpenTelemetry\API\Metrics\MeterProviderInterface::class, MeterProviderInterface::class);
+        $container->setAlias(APIMeterProviderInterface::class, MeterProviderInterface::class);
 
-        $container->register(LoggerProviderInterface::class, LoggerProviderInterface::class)
+        $container
+            ->register(LoggerProviderInterface::class, LoggerProviderInterface::class)
             ->setFactory([new Reference(DefaultLoggerProviderFactory::class), 'create'])
             ->setPublic(false);
 
-        $container->setAlias(\OpenTelemetry\API\Logs\LoggerProviderInterface::class, LoggerProviderInterface::class);
+        $container->setAlias(APILoggerProviderInterface::class, LoggerProviderInterface::class);
 
-        $container->register(ContextStorageInterface::class, ContextStorageInterface::class)
+        $container
+            ->register(ContextStorageInterface::class, ContextStorageInterface::class)
             ->setFactory([Context::class, 'storage'])
             ->setPublic(false);
 
-        $container->register(TracingSpanServiceInterface::class, TracingSpanService::class)
+        $container
+            ->register(TracingSpanServiceInterface::class, TracingSpanService::class)
             ->setAutowired(true)
             ->setAutoconfigured(true)
             ->setPublic(true);
+
+        $this->registerProviderAutoconfiguration($container);
     }
 
     private function registerInstrumentationServices(ContainerBuilder $container, InstrumentationConfig $instrumentation): void
@@ -173,28 +200,35 @@ class OpenTelemetryExtension extends Extension
         $deps = $this->getInstrumentationDependencies();
 
         if ($this->isInstrumentationEnabled($instrumentation->httpClient) && $this->checkDependency($deps['http_client'])) {
-            $container->register(HttpTracingMiddleware::class)
+            $container
+                ->register(HttpTracingMiddleware::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.http_client'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->messenger) && $this->checkDependency($deps['messenger'])) {
-            $container->register(MessageBusTracingMiddleware::class)
+            $container
+                ->register(MessageBusTracingMiddleware::class)
                 ->setAutowired(true)
                 ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.messenger'))
                 ->addTag('messenger.middleware', ['alias' => 'messenger_tracing']);
 
-            $container->register(DefaultMessengerSpanNameHandler::class)
+            $container
+                ->register(DefaultMessengerSpanNameHandler::class)
                 ->setAutowired(true)
                 ->setAutoconfigured(true)
                 ->addTag(InstrumentationTags::MESSENGER_SPAN_NAME_HANDLER);
 
             if ($instrumentation->messenger->longRunningCommandEnabled) {
-                $container->register(MessengerFlushSubscriber::class)
+                $container
+                    ->register(MessengerFlushSubscriber::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true);
 
-                $container->register(DefaultLongRunningCommand::class)
+                $container
+                    ->register(DefaultLongRunningCommand::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND);
@@ -202,23 +236,28 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->mailer) && $this->checkDependency($deps['mailer'])) {
-            $container->register(MailerTracingSubscriber::class)
+            $container
+                ->register(MailerTracingSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.mailer'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->twig) && $this->checkDependency($deps['twig'])) {
-            $container->register(TraceableTwigExtension::class)
+            $container
+                ->register(TraceableTwigExtension::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.twig'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->redis) && $this->checkDependency($deps['redis'])) {
             if ($this->classExists('Redis')) {
-                $container->register(TracingPhpRedis::class, TracingPhpRedis::class)
+                $container
+                    ->register(TracingPhpRedis::class, TracingPhpRedis::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
-                    ->setArgument('$instrumentation', new Reference(CachedInstrumentation::class));
+                    ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.redis'));
 
                 $this->setInstrumentationMetricsArgument(
                     container: $container,
@@ -235,10 +274,11 @@ class OpenTelemetryExtension extends Extension
 
         if ($this->isInstrumentationEnabled($instrumentation->predis) && $this->checkDependency($deps['predis'])) {
             if ($this->interfaceExists('Predis\ClientInterface')) {
-                $container->register(TracingRedis::class, TracingRedis::class)
+                $container
+                    ->register(TracingRedis::class, TracingRedis::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
-                    ->setArgument('$instrumentation', new Reference(CachedInstrumentation::class));
+                    ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.redis'));
 
                 $this->setInstrumentationMetricsArgument(
                     container: $container,
@@ -254,26 +294,32 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->async) && $this->checkDependency($deps['async'])) {
-            $container->register(AsyncTracingSubscriber::class)
+            $container
+                ->register(AsyncTracingSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.async'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->doctrine) && $this->checkDependency($deps['doctrine'])) {
-            $container->register(TracingDbalMiddleware::class)
+            $container
+                ->register(TracingDbalMiddleware::class)
                 ->setAutowired(true)
                 ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.doctrine'))
                 ->addTag('doctrine.middleware');
 
             if ($instrumentation->doctrine->defaultTraceIgnoreEnabled) {
-                $container->register(DefaultDoctrineTraceIgnore::class)
+                $container
+                    ->register(DefaultDoctrineTraceIgnore::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::DOCTRINE_TRACE_IGNORE);
             }
 
             if ($instrumentation->doctrine->defaultSpanNameHandlerEnabled) {
-                $container->register(DefaultDoctrineSpanNameHandler::class)
+                $container
+                    ->register(DefaultDoctrineSpanNameHandler::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::DOCTRINE_SPAN_NAME_HANDLER);
@@ -281,25 +327,31 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->cache)) {
-            $container->register(TracingCachePool::class)
+            $container
+                ->register(TracingCachePool::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.cache'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->events)) {
-            $container->register(TracingEventDispatcher::class)
+            $container
+                ->register(TracingEventDispatcher::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.events'));
 
             if ($instrumentation->events->defaultTraceIgnoreEnabled) {
-                $container->register(DefaultEventTraceIgnore::class)
+                $container
+                    ->register(DefaultEventTraceIgnore::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::EVENT_TRACE_IGNORE);
             }
 
             if ($instrumentation->events->defaultSpanNameHandlerEnabled) {
-                $container->register(DefaultEventSpanNameHandler::class)
+                $container
+                    ->register(DefaultEventSpanNameHandler::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::EVENT_SPAN_NAME_HANDLER);
@@ -307,12 +359,15 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->console) && $this->checkDependency($deps['console'])) {
-            $container->register(ConsoleTracingSubscriber::class)
+            $container
+                ->register(ConsoleTracingSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.console'));
 
             if ($this->isInstrumentationEnabled($instrumentation->messenger) && $this->checkDependency($deps['messenger'])) {
-                $container->register(MessengerConsumeTraceIgnore::class)
+                $container
+                    ->register(MessengerConsumeTraceIgnore::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::CONSOLE_TRACE_IGNORE);
@@ -320,22 +375,29 @@ class OpenTelemetryExtension extends Extension
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->traceable)) {
-            $container->register(TraceableSubscriber::class)
+            $container
+                ->register(TraceableSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.traceable'));
 
-            $container->register(TraceableHookSubscriber::class)
+            $container
+                ->register(TraceableHookSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.traceable'));
         }
 
         if ($this->isInstrumentationEnabled($instrumentation->httpServer)) {
-            $container->register(HttpRequestTracingSubscriber::class)
+            $container
+                ->register(HttpRequestTracingSubscriber::class)
                 ->setAutowired(true)
-                ->setAutoconfigured(true);
+                ->setAutoconfigured(true)
+                ->setArgument('$instrumentation', new Reference('danilovl.open_telemetry.instrumentation.http_server'));
 
             if ($instrumentation->httpServer->defaultTraceIgnoreEnabled) {
-                $container->register(DefaultHttpRequestTraceIgnore::class)
+                $container
+                    ->register(DefaultHttpRequestTraceIgnore::class)
                     ->setAutowired(true)
                     ->setAutoconfigured(true)
                     ->addTag(InstrumentationTags::HTTP_REQUEST_TRACE_IGNORE);
@@ -358,18 +420,36 @@ class OpenTelemetryExtension extends Extension
             'interface' => is_string($dependency) && $this->interfaceExists($dependency),
             'class' => is_string($dependency) && $this->classExists($dependency),
             'any' => is_array($dependency) && (function () use ($dependency) {
-                foreach ($dependency as $t => $d) {
-                    if ($t === 'extension' && $this->extensionLoaded($d)) return true;
-                    if ($t === 'interface' && $this->interfaceExists($d)) return true;
-                    if ($t === 'class' && $this->classExists($d)) return true;
-                }
+                    foreach ($dependency as $t => $d) {
+                        if ($t === 'extension' && $this->extensionLoaded($d)) {
+                            return true;
+                        }
 
-                return false;
-            })(),
+                        if ($t === 'interface' && $this->interfaceExists($d)) {
+                            return true;
+                        }
+
+                        if ($t === 'class' && $this->classExists($d)) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                })(),
             default => false
         };
     }
 
+    /**
+     * Registers one CachedInstrumentation service per instrumentation scope.
+     *
+     * CachedInstrumentation wraps a named tracer and caches the underlying Tracer instance
+     * to avoid repeated lookups from the TracerProvider on every span creation.
+     * Each instrumentation area (http_server, messenger, cache, etc.) gets its own
+     * named scope so spans can be filtered by instrumentation name in exporters/processors.
+     * The generic alias (CachedInstrumentation::class) is registered for services that
+     * do not need a specific scope, such as MetricsRecorder.
+     */
     private function registerCachedInstrumentation(ContainerBuilder $container): void
     {
         $id = 'danilovl.open_telemetry.cached_instrumentation';
@@ -385,10 +465,40 @@ class OpenTelemetryExtension extends Extension
         if (!$container->hasDefinition(CachedInstrumentation::class) && !$container->hasAlias(CachedInstrumentation::class)) {
             $container->setAlias(CachedInstrumentation::class, $id);
         }
+
+        $scopes = [
+            'async' => AsyncTracingSubscriber::INSTRUMENTATION_NAME,
+            'cache' => TracingCachePool::INSTRUMENTATION_NAME,
+            'console' => ConsoleTracingSubscriber::INSTRUMENTATION_NAME,
+            'doctrine' => TracingDbalMiddleware::INSTRUMENTATION_NAME,
+            'events' => TracingEventDispatcher::INSTRUMENTATION_NAME,
+            'http_client' => HttpTracingMiddleware::INSTRUMENTATION_NAME,
+            'http_server' => HttpRequestTracingSubscriber::INSTRUMENTATION_NAME,
+            'mailer' => MailerTracingSubscriber::INSTRUMENTATION_NAME,
+            'messenger' => MessageBusTracingMiddleware::INSTRUMENTATION_NAME,
+            'redis' => TracingRedis::INSTRUMENTATION_NAME,
+            'traceable' => TraceableSubscriber::INSTRUMENTATION_NAME,
+            'twig' => TraceableTwigExtension::INSTRUMENTATION_NAME,
+        ];
+
+        foreach ($scopes as $key => $scopeName) {
+            $scopeId = 'danilovl.open_telemetry.instrumentation.' . $key;
+
+            if (!$container->hasDefinition($scopeId)) {
+                $definition = new Definition(
+                    class: CachedInstrumentation::class,
+                    arguments: [$scopeName]
+                );
+
+                $container->setDefinition($scopeId, $definition);
+            }
+        }
     }
 
-    private function registerLongRunningCommand(ContainerBuilder $container, MessengerInstrumentationConfig $messengerConfig): void
-    {
+    private function registerLongRunningCommand(
+        ContainerBuilder $container,
+        MessengerInstrumentationConfig $messengerConfig
+    ): void {
         if (!$messengerConfig->longRunningCommandEnabled) {
             return;
         }
@@ -400,7 +510,8 @@ class OpenTelemetryExtension extends Extension
             return;
         }
 
-        $container->setDefinition($defaultServiceId, new Definition($defaultClass))
+        $container
+            ->setDefinition($defaultServiceId, new Definition($defaultClass))
             ->setAutowired(true)
             ->setAutoconfigured(true)
             ->setPublic(false)
@@ -442,6 +553,14 @@ class OpenTelemetryExtension extends Extension
     }
 
     /**
+     * Lazily creates the default metrics service for one instrumentation area and
+     * returns a Reference to it via the metrics interface alias.
+     *
+     * The pattern is: create the concrete default service once under a stable internal ID,
+     * then create an interface alias pointing to it. Returning a Reference to the interface
+     * (not the concrete class) allows OpenTelemetryCompilerPass to later re-point the alias
+     * to a user-provided custom implementation without changing the injection site.
+     *
      * @param array<string, string> $extraArguments
      */
     private function createMetricsReference(
@@ -477,8 +596,8 @@ class OpenTelemetryExtension extends Extension
             }
 
             $container->setDefinition(
-                $defaultMetricsServiceId,
-                $defaultMetricsDefinition
+                id: $defaultMetricsServiceId,
+                definition: $defaultMetricsDefinition
             );
         }
 
@@ -489,6 +608,14 @@ class OpenTelemetryExtension extends Extension
         return new Reference($metricsInterface);
     }
 
+    /**
+     * Ensures a single shared MetricsRecorder service exists and returns a Reference to it.
+     *
+     * MetricsRecorder is shared across all instrumentation areas (http, messenger, cache, etc.)
+     * so that all metrics flow through the same MeterProvider instance.
+     * Registered manually (autowired: false) to prevent accidental duplicate definitions
+     * and to have full control over the constructor arguments.
+     */
     private function createMetricsRecorderReference(ContainerBuilder $container): Reference
     {
         if ($container->hasDefinition(MetricsRecorderInterface::class) || $container->hasAlias(MetricsRecorderInterface::class)) {
@@ -526,35 +653,9 @@ class OpenTelemetryExtension extends Extension
             }
 
             /** @var array{type: string, name: string|array<string, string>, message: string} $dependencyConfig */
-            $type = $dependencyConfig['type'];
-            $dependency = $dependencyConfig['name'];
             $message = $dependencyConfig['message'];
 
-            $exists = match ($type) {
-                'extension' => is_string($dependency) && $this->extensionLoaded($dependency),
-                'interface' => is_string($dependency) && $this->interfaceExists($dependency),
-                'class' => is_string($dependency) && $this->classExists($dependency),
-                'any' => is_array($dependency) && (function () use ($dependency) {
-                    foreach ($dependency as $t => $d) {
-                        if ($t === 'extension' && $this->extensionLoaded($d)) {
-                            return true;
-                        }
-
-                        if ($t === 'interface' && $this->interfaceExists($d)) {
-                            return true;
-                        }
-
-                        if ($t === 'class' && $this->classExists($d)) {
-                            return true;
-                        }
-                    }
-
-                    return false;
-                })(),
-                default => false
-            };
-
-            if (!$exists) {
+            if (!$this->checkDependency($dependencyConfig)) {
                 throw new LogicException($message);
             }
         }
@@ -736,6 +837,42 @@ class OpenTelemetryExtension extends Extension
                 'defaultMetricsClass' => DefaultDoctrineMetrics::class
             ],
         ];
+    }
+
+    /**
+     * Registers autoconfiguration rules so that any service implementing one of the
+     * bundle's processor/exporter/reader interfaces is automatically tagged.
+     *
+     * This means developers only need to implement the interface — no manual tag
+     * configuration in services.yaml is required. OpenTelemetryCompilerPass then
+     * collects all tagged services and injects them (sorted by priority) into the
+     * corresponding provider factory (TracerProvider, MeterProvider, LoggerProvider).
+     */
+    private function registerProviderAutoconfiguration(ContainerBuilder $container): void
+    {
+        $container
+            ->registerForAutoconfiguration(TraceSpanProcessorInterface::class)
+            ->addTag(InstrumentationTags::SPAN_PROCESSOR);
+
+        $container
+            ->registerForAutoconfiguration(TraceSpanExporterInterface::class)
+            ->addTag(InstrumentationTags::SPAN_EXPORTER);
+
+        $container
+            ->registerForAutoconfiguration(BundleLogRecordProcessorInterface::class)
+            ->addTag(InstrumentationTags::LOG_PROCESSOR);
+
+        $container
+            ->registerForAutoconfiguration(BundleLogRecordExporterInterface::class)
+            ->addTag(InstrumentationTags::LOG_EXPORTER);
+
+        $container
+            ->registerForAutoconfiguration(MetricExporterInterface::class)
+            ->addTag(InstrumentationTags::METRIC_EXPORTER);
+
+        $container
+            ->registerForAutoconfiguration(MetricReaderInterface::class)
+            ->addTag(InstrumentationTags::METRIC_READER);
     }
 
     protected function extensionLoaded(string $name): bool

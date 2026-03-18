@@ -25,6 +25,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 final class MailerTracingSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.mailer';
+
     /**
      * @var array<int, SpanInterface>
      */

@@ -32,6 +32,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 final class ConsoleTracingSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.console';
+
     /**
      * @var array<int, SpanInterface>
      */

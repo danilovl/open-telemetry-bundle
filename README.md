@@ -198,6 +198,225 @@ danilovl_open_telemetry:
                 enabled: false
 ```
 
+## Bundle initialization flow
+
+This section describes how the bundle boots, how services are registered during container compilation,
+and how user-defined implementations automatically override bundle defaults.
+
+### Phase 1 — Container compilation (`OpenTelemetryExtension`)
+
+When Symfony compiles the container it calls `OpenTelemetryExtension::load()`.
+The extension performs the following steps in order:
+
+```
+OpenTelemetryExtension::load()
+│
+├── processConfiguration()          parse & validate open_telemetry.yaml
+│
+├── YamlFileLoader → services.yaml  register all base bundle services
+│
+├── DefaultResourceInfoFactory      inject service.name / namespace / version / environment
+│   └── ResourceInfo definition     factory-backed: create() called at runtime
+│
+├── registerInstrumentationServices()
+│   └── for each enabled instrumentation block (http_server, doctrine, redis …)
+│       ├── check PHP extension / class dependencies
+│       └── register instrumentation-specific services (subscribers, middleware, decorators)
+│
+├── registerCachedInstrumentation() wrap instrumentation with CachedInstrumentation if available
+│
+├── setInstrumentationMetricsArgument() (×N)
+│   └── create lazy MetricsRecorder reference for each instrumentation
+│
+├── Provider registrations (factory-backed definitions)
+│   ├── TracerProviderInterface   → DefaultTracerProviderFactory::create()
+│   ├── MeterProviderInterface    → DefaultMeterProviderFactory::create()
+│   └── LoggerProviderInterface   → DefaultLoggerProviderFactory::create()
+│
+├── ContextStorageInterface       → Context::storage()
+├── TracingSpanServiceInterface   → TracingSpanService  (autowired)
+│
+└── registerProviderAutoconfiguration()
+    ├── TraceSpanProcessorInterface  → tag: otel.span_processor
+    ├── TraceSpanExporterInterface   → tag: otel.span_exporter
+    ├── LogRecordProcessorInterface  → tag: otel.log_processor
+    ├── LogRecordExporterInterface   → tag: otel.log_exporter
+    ├── MetricExporterInterface      → tag: otel.metric_exporter
+    └── MetricReaderInterface        → tag: otel.metric_reader
+```
+
+### Phase 2 — Container compilation (`OpenTelemetryCompilerPass`)
+
+After all extensions have loaded, Symfony runs compiler passes.
+`OpenTelemetryCompilerPass::process()` wires the fully-built container:
+
+```
+OpenTelemetryCompilerPass::process()
+│
+├── registerMessengerMiddleware()
+│   ├── inject MessageBusTracingMiddleware into messenger.bus.default (parameter-based)
+│   └── inject into every service tagged messenger.bus (IteratorArgument or array)
+│
+├── registerHttpClientDecorator()
+│   └── clone HttpTracingMiddleware for each http_client.client tagged service
+│       └── setDecoratedService($id, priority: 1000)
+│
+├── registerEventDispatcherDecorator()
+│   └── TracingEventDispatcher decorates event_dispatcher
+│
+├── registerCacheDecorator()
+│   └── TracingCachePool decorates cache.app
+│
+├── registerRedisDecorator()
+│   └── scan all definitions → find services extending Redis
+│       └── clone TracingPhpRedis, setDecoratedService($id)
+│
+├── registerPRedisDecorator()
+│   └── scan all definitions → find services implementing Predis\ClientInterface
+│       └── clone TracingRedis, setDecoratedService($id)
+│
+├── overrideInterfaceAliasesByUserImplementations()  ← see Phase 2a below
+│
+├── registerTracerProviderProcessors()
+│   ├── collect services tagged otel.span_processor  → setArgument('$processors')
+│   └── collect services tagged otel.span_exporter   → setArgument('$exporters')
+│
+├── registerLoggerProviderProcessors()
+│   ├── collect services tagged otel.log_processor   → setArgument('$processors')
+│   └── collect services tagged otel.log_exporter    → setArgument('$exporters')
+│
+└── registerMeterProviderReaders()
+    ├── collect services tagged otel.metric_exporter → setArgument('$exporters')
+    └── collect services tagged otel.metric_reader   → setArgument('$readers')
+```
+
+#### Phase 2.1 — Automatic interface alias override
+
+For each instrumentation metrics interface the bundle registers a default alias:
+
+```
+Interface                        Default alias (bundle service)
+──────────────────────────────────────────────────────────────────────
+HttpServerMetricsInterface    →  danilovl.open_telemetry.metrics.http_server.default
+DoctrineMetricsInterface      →  danilovl.open_telemetry.metrics.doctrine.default
+RedisMetricsInterface         →  danilovl.open_telemetry.metrics.redis.default
+CacheMetricsInterface         →  danilovl.open_telemetry.metrics.cache.default
+ConsoleMetricsInterface       →  danilovl.open_telemetry.metrics.console.default
+MessengerMetricsInterface     →  danilovl.open_telemetry.metrics.messenger.default
+AsyncMetricsInterface         →  danilovl.open_telemetry.metrics.async.default
+HttpClientMetricsInterface    →  danilovl.open_telemetry.metrics.http_client.default
+MailerMetricsInterface        →  danilovl.open_telemetry.metrics.mailer.default
+EventDispatcherMetricsInterface → danilovl.open_telemetry.metrics.events.default
+TraceableMetricsInterface     →  danilovl.open_telemetry.metrics.traceable.default
+```
+
+At compile time `overrideInterfaceAliasesByUserImplementations()` scans every container
+definition. If it finds exactly one user-defined service that implements an interface,
+it automatically re-points the alias to that service — no explicit YAML configuration needed.
+If more than one custom implementation is found, a `LogicException` is thrown asking the
+developer to declare the alias explicitly.
+
+```
+User registers MyDoctrineMetrics implements DoctrineMetricsInterface
+        │
+        ▼
+CompilerPass detects 1 custom implementation
+        │
+        ▼
+setAlias(DoctrineMetricsInterface, MyDoctrineMetrics)
+        │
+        ▼
+All instrumentation services now inject MyDoctrineMetrics automatically
+```
+
+The same mechanism applies to the provider factories via aliases set in the extension:
+
+```yaml
+# No YAML needed — just implement the interface and register the service
+services:
+    App\Tracing\MyTracerProviderFactory:
+        # implements TracerProviderFactoryInterface
+        # CompilerPass detects it and overrides the TracerProviderFactoryInterface alias
+```
+
+#### Phase 2.2 — `TraceableHookCompilerPass`
+
+A second compiler pass registered alongside `OpenTelemetryCompilerPass` in `OpenTelemetryBundle::build()`.
+It scans every container definition for classes that carry the `#[Traceable]` attribute
+(at class or method level) and builds a static hook map for `TraceableHookSubscriber`:
+
+```
+TraceableHookCompilerPass::process()
+│
+├── iterate all container definitions
+│   ├── skip abstract / synthetic / placeholder definitions
+│   └── reflect each concrete class
+│       ├── read class-level #[Traceable] (fallback for all public methods)
+│       └── read method-level #[Traceable] (takes priority over class-level)
+│
+├── deduplicate hooks by key "ClassName::methodName"
+│   └── only one entry per method survives (method-level wins over class-level)
+│
+└── setArgument('$hooks', $hooks) → TraceableHookSubscriber
+        └── subscriber wraps every listed method with a tracing span at runtime
+```
+
+### Phase 3 — Runtime SDK initialization (`OpenTelemetryInitializer`)
+
+The OpenTelemetry SDK is **not** initialized during container compilation.
+It is initialized lazily on the first handled event:
+
+```
+HTTP request arrives
+        │
+        ▼
+KernelEvents::REQUEST (priority PHP_INT_MAX — runs first)
+        │
+        ▼
+OpenTelemetryInitializer::onKernelRequest()
+        │
+        ├── already initialized? → skip
+        │
+        └── OpenTelemetryFactory::initializeSdk()
+                ├── build ResourceInfo  (service.name, namespace, version, environment)
+                ├── TracerProviderFactory::create()   → SDK TracerProvider
+                ├── MeterProviderFactory::create()    → SDK MeterProvider
+                ├── LoggerProviderFactory::create()   → SDK LoggerProvider
+                ├── PropagatorFactory::create()       → TextMapPropagator
+                └── register providers in OpenTelemetry Globals
+                        └── all instrumentation services now emit telemetry
+
+Console command (CLI)
+        │
+        ▼
+ConsoleEvents::COMMAND (priority PHP_INT_MAX)
+        └── same OpenTelemetryInitializer::initialize() path
+```
+
+### Phase 4 — SDK shutdown (`TracerShutdownSubscriber`)
+
+After the HTTP response is sent or the console command finishes, the SDK must be
+flushed and shut down to ensure all buffered spans are exported before the process ends:
+
+```
+HTTP cycle ends
+        │
+        ▼
+KernelEvents::TERMINATE (priority -PHP_INT_MAX + 2 — runs last)
+        │
+        ▼
+TracerShutdownSubscriber::onTerminate()
+        └── Globals::tracerProvider() instanceof TracerProviderInterface?
+                └── yes → TracerProvider::shutdown()
+                        └── flushes BatchSpanProcessor, closes exporter connections
+
+Console command ends
+        │
+        ▼
+ConsoleEvents::TERMINATE (priority -PHP_INT_MAX + 2)
+        └── same TracerShutdownSubscriber::onTerminate() path
+```
+
 ## Service configuration
 
 The `service` block maps to OpenTelemetry resource attributes attached to all spans and metrics:
@@ -244,6 +463,82 @@ class MyTracerProviderFactory implements TracerProviderFactoryInterface
     }
 }
 ```
+
+---
+
+## Custom Processors and Exporters
+
+The bundle allows you to easily register custom OpenTelemetry processors and exporters. By implementing the provided interfaces, your services will be automatically discovered and injected into the corresponding providers via Symfony's DI autoconfiguration.
+
+### Supported interfaces
+
+#### Tracing
+- `TraceSpanProcessorInterface`: For custom span processors. For convenience, you can extend `AbstractFilteringSpanProcessor`.
+- `TraceSpanExporterInterface`: For custom span exporters. Automatically wrapped in a `BatchSpanProcessor`.
+
+#### Logging
+- `LogRecordProcessorInterface`: For custom log record processors. For convenience, you can extend `AbstractFilteringLogRecordProcessor`.
+- `LogRecordExporterInterface`: For custom log record exporters. Automatically wrapped in a `SimpleLogRecordProcessor`.
+
+#### Metrics
+- `MetricExporterInterface`: For custom metric exporters. Automatically wrapped in an `ExportingReader`.
+- `MetricReaderInterface`: For custom metric readers.
+
+### Instrumentation scope filtering
+
+Each interface includes a `getSupportedInstrumentation()` method. This allows you to restrict which instrumentation scopes the processor or exporter handles.
+
+- Return an **empty array** to receive data from all scopes.
+- Return an array of scope names (e.g. `['danilovl/open-telemetry/doctrine']`) to receive data only from specific instrumentations.
+
+### Priority
+
+The `getPriority()` method controls the order in which processors or readers are added to the provider. Higher values mean earlier registration.
+
+---
+
+## Cached Instrumentation
+
+The bundle registers `CachedInstrumentation` services for all its components. This simplifies creating spans and metrics in your own services.
+
+### Injecting CachedInstrumentation
+
+You can inject the `OpenTelemetry\API\Instrumentation\CachedInstrumentation` service. By default, it uses the `danilovl/open-telemetry` instrumentation scope.
+
+```php
+use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+
+class MyService
+{
+    public function __construct(
+        private CachedInstrumentation $cachedInstrumentation
+    ) {}
+
+    public function doSomething(): void
+    {
+        $span = $this->cachedInstrumentation->tracer()->spanBuilder('my_action')->startSpan();
+        // ...
+        $span->end();
+    }
+}
+```
+
+### Component-specific instrumentation
+
+The bundle also provides specific `CachedInstrumentation` services for each component. You can inject them by their service IDs:
+
+- `danilovl.open_telemetry.instrumentation.async`
+- `danilovl.open_telemetry.instrumentation.cache`
+- `danilovl.open_telemetry.instrumentation.console`
+- `danilovl.open_telemetry.instrumentation.doctrine`
+- `danilovl.open_telemetry.instrumentation.events`
+- `danilovl.open_telemetry.instrumentation.http_client`
+- `danilovl.open_telemetry.instrumentation.http_server`
+- `danilovl.open_telemetry.instrumentation.mailer`
+- `danilovl.open_telemetry.instrumentation.messenger`
+- `danilovl.open_telemetry.instrumentation.redis`
+- `danilovl.open_telemetry.instrumentation.traceable`
+- `danilovl.open_telemetry.instrumentation.twig`
 
 ---
 

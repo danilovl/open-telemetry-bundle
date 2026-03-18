@@ -43,6 +43,8 @@ use Throwable;
 
 final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.http_client';
+
     use AsyncDecoratorTrait;
 
     /**

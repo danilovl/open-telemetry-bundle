@@ -20,6 +20,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 final class AsyncTracingSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.async';
+
     /**
      * @var array<int, SpanInterface>
      */

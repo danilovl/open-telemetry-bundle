@@ -32,6 +32,8 @@ use Throwable;
 #[AsDecorator(decorates: 'event_dispatcher')]
 final readonly class TracingEventDispatcher implements EventDispatcherInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.events';
+
     /**
      * @param EventDispatcherInterface $inner
      * @param iterable<EventAttributeProviderInterface> $eventAttributeProviders

@@ -48,6 +48,8 @@ use WeakMap;
 
 final class HttpRequestTracingSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.http_server';
+
     /**
      * @var WeakMap<Request, RequestTracingContext>
      */

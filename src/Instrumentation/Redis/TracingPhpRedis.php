@@ -29,6 +29,8 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 final class TracingPhpRedis implements TracingPhpRedisInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.redis';
+
     /**
      * @param iterable<RedisAttributeProviderInterface> $redisAttributeProviders
      * @param iterable<RedisSpanNameHandlerInterface> $redisSpanNameHandlers

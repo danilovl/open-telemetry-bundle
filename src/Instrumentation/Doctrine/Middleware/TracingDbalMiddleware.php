@@ -16,6 +16,8 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 final class TracingDbalMiddleware implements Middleware
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.doctrine';
+
     /**
      * @param DoctrineSpanNameHandlerInterface[] $doctrineSpanNameHandlers
      * @param DoctrineTraceIgnoreInterface[] $doctrineTraceIgnores

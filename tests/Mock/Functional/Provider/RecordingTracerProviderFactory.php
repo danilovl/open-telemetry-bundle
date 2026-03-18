@@ -16,7 +16,7 @@ class RecordingTracerProviderFactory implements TracerProviderFactoryInterface
     }
 
     #[Override]
-    public function create(iterable $processors = []): TracerProviderInterface
+    public function create(iterable $processors = [], iterable $exporters = []): TracerProviderInterface
     {
         return $this->provider;
     }

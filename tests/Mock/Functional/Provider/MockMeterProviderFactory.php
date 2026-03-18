@@ -10,7 +10,7 @@ use OpenTelemetry\SDK\Metrics\{
 
 class MockMeterProviderFactory implements MeterProviderFactoryInterface
 {
-    public function create(): MeterProviderInterface
+    public function create(iterable $exporters = [], iterable $readers = []): MeterProviderInterface
     {
         return new NoopMeterProvider;
     }

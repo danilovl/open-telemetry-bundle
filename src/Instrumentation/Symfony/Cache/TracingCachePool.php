@@ -28,6 +28,8 @@ use Throwable;
 
 final class TracingCachePool implements AdapterInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.cache';
+
     /**
      * @param iterable<CacheAttributeProviderInterface> $cacheAttributeProviders
      * @param iterable<CacheSpanNameHandlerInterface> $cacheSpanNameHandlers

@@ -43,6 +43,8 @@ use SensitiveParameter;
  */
 final class TraceableDriver extends AbstractDriverMiddleware
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.doctrine';
+
     /**
      * @param iterable<DoctrineSpanNameHandlerInterface> $doctrineSpanNameHandlers
      * @param iterable<DoctrineTraceIgnoreInterface> $doctrineTraceIgnores

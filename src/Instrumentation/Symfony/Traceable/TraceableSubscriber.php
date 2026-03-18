@@ -43,6 +43,7 @@ use Symfony\Component\HttpKernel\KernelEvents;
 
 final class TraceableSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.traceable';
     private const string HTTP_SPAN_ATTRIBUTE = '_otel_traceable_span';
     private const string HTTP_SCOPE_ATTRIBUTE = '_otel_traceable_scope';
 

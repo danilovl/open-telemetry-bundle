@@ -35,6 +35,8 @@ use function OpenTelemetry\Instrumentation\hook;
 
 final class TraceableHookSubscriber implements EventSubscriberInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.traceable';
+
     private bool $initialized = false;
 
     /**

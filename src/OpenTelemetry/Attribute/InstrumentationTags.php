@@ -37,4 +37,9 @@ final class InstrumentationTags
     public const string TWIG_SPAN_NAME_HANDLER = 'danilovl.open_telemetry.twig.span_name_handler';
     public const string TWIG_TRACE_IGNORE = 'danilovl.open_telemetry.twig.trace_ignore';
     public const string SPAN_PROCESSOR = 'danilovl.open_telemetry.span_processor';
+    public const string SPAN_EXPORTER = 'danilovl.open_telemetry.span_exporter';
+    public const string LOG_PROCESSOR = 'danilovl.open_telemetry.log_processor';
+    public const string LOG_EXPORTER = 'danilovl.open_telemetry.log_exporter';
+    public const string METRIC_EXPORTER = 'danilovl.open_telemetry.metric_exporter';
+    public const string METRIC_READER = 'danilovl.open_telemetry.metric_reader';
 }

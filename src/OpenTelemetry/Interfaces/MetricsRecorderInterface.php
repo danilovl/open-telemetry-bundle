@@ -10,6 +10,22 @@ use OpenTelemetry\API\Metrics\{
     AsynchronousInstrument
 };
 
+/**
+ * Facade for recording application metrics via the OpenTelemetry Metrics API.
+ *
+ * Provides a unified entry point for all instrument types:
+ * - Counters / UpDownCounters — for cumulative or bidirectional integer/float values.
+ * - Histograms — for measuring distributions (e.g. request duration, payload size).
+ * - Gauges — for recording the current value of a point-in-time measurement.
+ * - Observable (async) instruments — for values that are measured on demand via callbacks.
+ *
+ * All synchronous methods accept optional $unit and $description which are used
+ * to register the instrument on first use; subsequent calls with the same $name
+ * reuse the already-registered instrument (instruments are cached by name).
+ *
+ * The concrete implementation is {@see \Danilovl\OpenTelemetryBundle\OpenTelemetry\Service\MetricsRecorder},
+ * which is registered as a singleton service in the DI container.
+ */
 interface MetricsRecorderInterface
 {
     /**

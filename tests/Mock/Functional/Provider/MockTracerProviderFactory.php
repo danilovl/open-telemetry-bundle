@@ -10,7 +10,7 @@ use OpenTelemetry\SDK\Trace\{
 
 class MockTracerProviderFactory implements TracerProviderFactoryInterface
 {
-    public function create(iterable $processors = []): TracerProviderInterface
+    public function create(iterable $processors = [], iterable $exporters = []): TracerProviderInterface
     {
         return new NoopTracerProvider;
     }

@@ -38,6 +38,8 @@ use Throwable;
 
 final class MessageBusTracingMiddleware implements MiddlewareInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.messenger';
+
     /**
      * @param iterable<MessengerAttributeProviderInterface> $attributeProviders
      * @param iterable<MessengerSpanNameHandlerInterface> $messengerSpanNameHandlers
@@ -123,6 +125,7 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
 
         try {
             $handledEnvelope = $stack->next()->handle($envelope, $stack);
+
             $handledAttributes = $this->buildMessagingAttributes($handledEnvelope, $operation);
 
             $span->setAttributes(TracingHelper::normalizeAttributeValues($handledAttributes));

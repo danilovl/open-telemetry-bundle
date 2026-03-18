@@ -29,6 +29,8 @@ use Throwable;
 
 final class TracingRedis implements ClientInterface
 {
+    public const string INSTRUMENTATION_NAME = 'danilovl.redis';
+
     /**
      * @param iterable<RedisAttributeProviderInterface> $redisAttributeProviders
      * @param iterable<RedisSpanNameHandlerInterface> $redisSpanNameHandlers
