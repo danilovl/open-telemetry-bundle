@@ -36,7 +36,7 @@ class TestKernel extends Kernel
 
     public function __construct()
     {
-        parent::__construct('test', false);
+        parent::__construct('test', true);
     }
 
     public function getProjectDir(): string

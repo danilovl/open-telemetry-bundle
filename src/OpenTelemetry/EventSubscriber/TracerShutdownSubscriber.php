@@ -13,8 +13,8 @@ final class TracerShutdownSubscriber implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            KernelEvents::TERMINATE => ['onTerminate', -4_096],
-            ConsoleEvents::TERMINATE => ['onTerminate', -4_096],
+            KernelEvents::TERMINATE => ['onTerminate', -PHP_INT_MAX + 2],
+            ConsoleEvents::TERMINATE => ['onTerminate', -PHP_INT_MAX + 2],
         ];
     }
 

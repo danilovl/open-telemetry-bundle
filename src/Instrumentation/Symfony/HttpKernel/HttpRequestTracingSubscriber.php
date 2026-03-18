@@ -35,6 +35,7 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\{
+    ControllerEvent,
     ExceptionEvent,
     RequestEvent,
     ResponseEvent,
@@ -95,8 +96,9 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            KernelEvents::REQUEST => ['onRequest', 16],
-            KernelEvents::EXCEPTION => ['onException', 0],
+            KernelEvents::REQUEST => ['onRequest', 64],
+            KernelEvents::CONTROLLER => ['onController', 100],
+            KernelEvents::EXCEPTION => ['onException', -10],
             KernelEvents::RESPONSE => ['onResponse', -1_000],
             KernelEvents::TERMINATE => ['onTerminate', -2_000]
         ];
@@ -109,17 +111,8 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         $request = $event->getRequest();
-        $route = $request->attributes->get('_route');
 
-        $routePath = is_string($route) && $route !== ''
-            ? $this->router?->getRouteCollection()->get($route)?->getPath()
-            : null;
-
-        $spanName = sprintf(
-            '%s %s',
-            $request->getMethod(),
-            $routePath ?: $request->getPathInfo()
-        );
+        $spanName = sprintf('%s %s', $request->getMethod(), $request->getPathInfo());
 
         foreach ($this->httpRequestSpanNameHandlers as $httpRequestSpanNameHandler) {
             $spanName = $httpRequestSpanNameHandler->process($spanName, $event);
@@ -153,7 +146,6 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             ->setAttribute(NetworkAttributes::NETWORK_PEER_ADDRESS, $request->getClientIp())
             ->setAttribute(ClientAttributes::CLIENT_ADDRESS, $request->server->get('REMOTE_HOST'))
             ->setAttribute(ClientAttributes::CLIENT_PORT, $request->server->get('REMOTE_PORT'))
-            ->setAttribute(HttpAttributes::HTTP_ROUTE, is_string($route) ? $route : 'unknown')
             ->startSpan();
 
         SpanAttributeEnricher::enrich(
@@ -170,6 +162,29 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             scope: $scope,
             startTime: hrtime(true)
         );
+    }
+
+    public function onController(ControllerEvent $event): void
+    {
+        if (!$event->isMainRequest()) {
+            return;
+        }
+
+        $request = $event->getRequest();
+        $context = $this->contextMap[$request] ?? null;
+
+        if (!$context instanceof RequestTracingContext) {
+            return;
+        }
+
+        $route = $request->attributes->get('_route');
+        $routePath = is_string($route) && $route !== ''
+            ? $this->router?->getRouteCollection()->get($route)?->getPath()
+            : null;
+
+        $spanName = sprintf('%s %s', $request->getMethod(), $routePath ?: $request->getPathInfo());
+        $context->span->updateName($spanName);
+        $context->span->setAttribute(HttpAttributes::HTTP_ROUTE, is_string($route) ? $route : 'unknown');
     }
 
     public function onException(ExceptionEvent $event): void

@@ -96,7 +96,7 @@ final class TraceableSubscriber implements EventSubscriberInterface
     {
         return [
             KernelEvents::CONTROLLER => ['onController', 50],
-            KernelEvents::EXCEPTION => ['onHttpException', 0],
+            KernelEvents::EXCEPTION => ['onHttpException', 10],
             KernelEvents::TERMINATE => ['onHttpTerminate', -50],
             ConsoleEvents::COMMAND => ['onConsoleCommand', 50],
             ConsoleEvents::ERROR => ['onConsoleError', 0],

@@ -3,7 +3,6 @@
 namespace Danilovl\OpenTelemetryBundle\OpenTelemetry\Service;
 
 use Symfony\Component\Console\ConsoleEvents;
-use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
@@ -17,8 +16,8 @@ final class OpenTelemetryInitializer implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            KernelEvents::REQUEST => ['onKernelRequest', 4_096],
-            ConsoleEvents::COMMAND => ['onConsoleCommand', 4_096],
+            KernelEvents::REQUEST => ['onKernelRequest', PHP_INT_MAX],
+            ConsoleEvents::COMMAND => ['onConsoleCommand', PHP_INT_MAX],
         ];
     }
 
@@ -31,7 +30,7 @@ final class OpenTelemetryInitializer implements EventSubscriberInterface
         $this->initialize();
     }
 
-    public function onConsoleCommand(ConsoleCommandEvent $event): void
+    public function onConsoleCommand(): void
     {
         $this->initialize();
     }
