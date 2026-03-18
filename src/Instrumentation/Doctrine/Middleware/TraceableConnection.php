@@ -25,31 +25,12 @@ class TraceableConnection extends AbstractConnectionMiddleware
 
     public function prepare(string $sql): DriverStatement
     {
-        $spanName = SqlHelper::buildSpanName($sql);
-        $parts = explode('.', $spanName);
-        $operation = end($parts) ?: $spanName;
-
-        return $this->tracer->traceFunction(
-            name: $spanName,
-            callback: function (?SpanInterface $span) use ($sql): DriverStatement {
-                if ($span instanceof SpanInterface) {
-                    $span->setAttribute(DbAttributes::DB_QUERY_TEXT, $sql);
-                }
-
-                return new TraceableStatement(
-                    statement: parent::prepare($sql),
-                    tracer: $this->tracer,
-                    sql: $sql,
-                    dbSystem: $this->dbSystem,
-                    dbName: $this->dbName
-                );
-            },
-            context: [
-                DoctrineContextAttribute::OPERATION->value => $operation,
-                DoctrineContextAttribute::SYSTEM->value => $this->dbSystem,
-                DoctrineContextAttribute::NAME->value => $this->dbName,
-                DoctrineContextAttribute::SQL->value => $sql,
-            ]
+        return new TraceableStatement(
+            statement: parent::prepare($sql),
+            tracer: $this->tracer,
+            sql: $sql,
+            dbSystem: $this->dbSystem,
+            dbName: $this->dbName
         );
     }
 

@@ -117,8 +117,8 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
 
         $templateDefinition = $container->getDefinition($templateId);
 
-        foreach ($container->findTaggedServiceIds('http_client') as $id => $tags) {
-            if ($id === 'http_client' || $id === $templateId) {
+        foreach ($container->findTaggedServiceIds('http_client.client') as $id => $tags) {
+            if ($id === $templateId) {
                 continue;
             }
 

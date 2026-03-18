@@ -20,10 +20,7 @@ use OpenTelemetry\API\Trace\{
     SpanKind,
     StatusCode
 };
-use OpenTelemetry\Context\{
-    Context,
-    ContextStorageScopeInterface
-};
+use OpenTelemetry\Context\Context;
 use OpenTelemetry\SemConv\Attributes\{
     ClientAttributes,
     ErrorAttributes,
@@ -46,12 +43,14 @@ use Symfony\Component\HttpKernel\Event\{
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\Routing\RouterInterface;
+use WeakMap;
 
 final class HttpRequestTracingSubscriber implements EventSubscriberInterface
 {
-    private const string SPAN_ATTRIBUTE = '_otel_http_span';
-    private const string SCOPE_ATTRIBUTE = '_otel_http_scope';
-    private const string START_TIME_ATTRIBUTE = '_otel_http_start_time';
+    /**
+     * @var WeakMap<Request, RequestTracingContext>
+     */
+    private WeakMap $contextMap;
 
     /**
      * @param iterable<HttpRequestAttributeProviderInterface> $requestAttributeProviders
@@ -86,6 +85,8 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             items: $this->httpRequestTraceIgnores,
             expectedType: HttpRequestTraceIgnoreInterface::class
         );
+
+        $this->contextMap = new WeakMap;
     }
 
     /**
@@ -97,7 +98,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             KernelEvents::REQUEST => ['onRequest', 16],
             KernelEvents::EXCEPTION => ['onException', 0],
             KernelEvents::RESPONSE => ['onResponse', -1_000],
-            KernelEvents::TERMINATE => ['onTerminate', -2_000],
+            KernelEvents::TERMINATE => ['onTerminate', -2_000]
         ];
     }
 
@@ -164,15 +165,17 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         $context = $span->storeInContext(Context::getCurrent());
         $scope = Context::storage()->attach($context);
 
-        $request->attributes->set(self::SPAN_ATTRIBUTE, $span);
-        $request->attributes->set(self::SCOPE_ATTRIBUTE, $scope);
-        $request->attributes->set(self::START_TIME_ATTRIBUTE, hrtime(true));
+        $this->contextMap[$request] = new RequestTracingContext(
+            span: $span,
+            scope: $scope,
+            startTime: hrtime(true)
+        );
     }
 
     public function onException(ExceptionEvent $event): void
     {
         $request = $event->getRequest();
-        $span = $request->attributes->get(self::SPAN_ATTRIBUTE);
+        $span = ($this->contextMap[$request] ?? null)?->span;
 
         if (!$span instanceof SpanInterface) {
             return;
@@ -202,7 +205,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
 
         $request = $event->getRequest();
         $response = $event->getResponse();
-        $span = $request->attributes->get(self::SPAN_ATTRIBUTE);
+        $span = ($this->contextMap[$request] ?? null)?->span;
 
         if (!$span instanceof SpanInterface) {
             return;
@@ -226,7 +229,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         $request = $event->getRequest();
-        $span = $request->attributes->get(self::SPAN_ATTRIBUTE);
+        $span = ($this->contextMap[$request] ?? null)?->span;
 
         if (!$span instanceof SpanInterface) {
             return;
@@ -241,7 +244,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
 
     private function recordRequestMetrics(Request $request, int $statusCode): void
     {
-        $startTime = $request->attributes->get(self::START_TIME_ATTRIBUTE);
+        $startTime = ($this->contextMap[$request] ?? null)?->startTime;
 
         if (!is_numeric($startTime)) {
             return;
@@ -250,30 +253,20 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         $durationMs = (hrtime(true) - $startTime) / 1_000_000;
 
         $this->httpServerMetrics?->recordRequest($request, $statusCode, $durationMs);
-
-        $request->attributes->remove(self::START_TIME_ATTRIBUTE);
     }
 
     private function finishSpan(Request $request): void
     {
-        $span = $request->attributes->get(self::SPAN_ATTRIBUTE);
+        $context = $this->contextMap[$request] ?? null;
 
-        if (!$span instanceof SpanInterface) {
+        if (!$context instanceof RequestTracingContext) {
+            Context::storage()->scope()?->detach();
+
             return;
         }
 
-        $scope = $request->attributes->get(self::SCOPE_ATTRIBUTE);
+        $context->finish();
 
-        if ($scope instanceof ContextStorageScopeInterface) {
-            $scope->detach();
-        } else {
-            Context::storage()->scope()?->detach();
-        }
-
-        $span->end();
-
-        $request->attributes->remove(self::SPAN_ATTRIBUTE);
-        $request->attributes->remove(self::SCOPE_ATTRIBUTE);
-        $request->attributes->remove(self::START_TIME_ATTRIBUTE);
+        unset($this->contextMap[$request]);
     }
 }

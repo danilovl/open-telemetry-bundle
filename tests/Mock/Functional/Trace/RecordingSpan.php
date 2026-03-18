@@ -103,15 +103,14 @@ class RecordingSpan extends Span
     }
 
     /**
-     * @param iterable<mixed> $attributes
+     * @param iterable<string, mixed> $attributes
      */
     #[Override]
     public function addEvent(string $name, iterable $attributes = [], ?int $timestamp = null): SpanInterface
     {
         $attrs = [];
         foreach ($attributes as $k => $v) {
-            /** @phpstan-ignore cast.string */
-            $attrs[(string) $k] = $v;
+            $attrs[$k] = $v;
         }
         $this->events[] = ['name' => $name, 'attributes' => $attrs];
 
@@ -119,12 +118,22 @@ class RecordingSpan extends Span
     }
 
     /**
-     * @param iterable<mixed> $attributes
+     * @param iterable<string, mixed> $attributes
      */
     #[Override]
     public function recordException(Throwable $exception, iterable $attributes = []): SpanInterface
     {
-        return $this;
+        $eventAttributes = [
+            'exception.type' => $exception::class,
+            'exception.message' => $exception->getMessage(),
+            'exception.stacktrace' => $exception->getTraceAsString(),
+        ];
+
+        foreach ($attributes as $k => $v) {
+            $eventAttributes[$k] = $v;
+        }
+
+        return $this->addEvent('exception', $eventAttributes);
     }
 
     #[Override]
