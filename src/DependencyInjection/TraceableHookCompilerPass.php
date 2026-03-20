@@ -2,7 +2,10 @@
 
 namespace Danilovl\OpenTelemetryBundle\DependencyInjection;
 
-use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\Traceable;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\{
+    Traceable,
+    TraceableHandler
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\TraceableHookSubscriber;
 use ReflectionClass;
 use ReflectionMethod;
@@ -48,6 +51,10 @@ final class TraceableHookCompilerPass implements CompilerPassInterface
                 $traceable = $methodTraceable ?? $classTraceable;
 
                 if (!$traceable instanceof Traceable) {
+                    continue;
+                }
+
+                if ($traceable->handler !== TraceableHandler::HOOK) {
                     continue;
                 }
 

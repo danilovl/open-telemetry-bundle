@@ -2,7 +2,10 @@
 
 namespace Danilovl\OpenTelemetryBundle\Tests\Mock\Functional\Controller;
 
-use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\Traceable;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\{
+    Traceable,
+    TraceableHandler
+};
 use Symfony\Component\HttpFoundation\{
     JsonResponse,
     Request,
@@ -11,12 +14,12 @@ use Symfony\Component\HttpFoundation\{
 
 class TestController
 {
-    public function home(Request $request): Response
+    public function home(): Response
     {
         return new Response('OK', Response::HTTP_OK);
     }
 
-    #[Traceable(name: 'api.users', attributes: ['resource' => 'users'])]
+    #[Traceable(name: 'api.users', attributes: ['resource' => 'users'], handler: TraceableHandler::CONTROLLER)]
     public function apiUsers(Request $request): JsonResponse
     {
         return new JsonResponse(['users' => [['id' => 1, 'name' => 'Alice']]]);
@@ -30,9 +33,10 @@ class TestController
             'int' => 42,
             'float' => 3.14,
             'array' => ['a', 'b']
-        ]
+        ],
+        handler: TraceableHandler::CONTROLLER
     )]
-    public function apiAttributes(Request $request): JsonResponse
+    public function apiAttributes(): JsonResponse
     {
         return new JsonResponse(['status' => 'ok']);
     }

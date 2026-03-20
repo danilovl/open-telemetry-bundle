@@ -2,7 +2,10 @@
 
 namespace Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable;
 
-use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\Traceable;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\{
+    Traceable,
+    TraceableHandler
+};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\Interfaces\{
     TraceableAttributeProviderInterface,
     TraceableSpanNameHandlerInterface,
@@ -34,18 +37,23 @@ use Symfony\Component\Console\Event\{
 };
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\{
     ControllerEvent,
     ExceptionEvent,
     TerminateEvent
 };
 use Symfony\Component\HttpKernel\KernelEvents;
+use WeakMap;
 
 final class TraceableSubscriber implements EventSubscriberInterface
 {
     public const string INSTRUMENTATION_NAME = 'danilovl.traceable';
-    private const string HTTP_SPAN_ATTRIBUTE = '_otel_traceable_span';
-    private const string HTTP_SCOPE_ATTRIBUTE = '_otel_traceable_scope';
+
+    /**
+     * @var WeakMap<Request, TraceableTracingContext>
+     */
+    private WeakMap $contextMap;
 
     /**
      * @var array<int, SpanInterface>
@@ -88,6 +96,8 @@ final class TraceableSubscriber implements EventSubscriberInterface
             items: $this->traceableTraceIgnores,
             expectedType: TraceableTraceIgnoreInterface::class
         );
+
+        $this->contextMap = new WeakMap;
     }
 
     /**
@@ -101,7 +111,7 @@ final class TraceableSubscriber implements EventSubscriberInterface
             KernelEvents::TERMINATE => ['onHttpTerminate', -50],
             ConsoleEvents::COMMAND => ['onConsoleCommand', 50],
             ConsoleEvents::ERROR => ['onConsoleError', 0],
-            ConsoleEvents::TERMINATE => ['onConsoleTerminate', -50],
+            ConsoleEvents::TERMINATE => ['onConsoleTerminate', -50]
         ];
     }
 
@@ -111,6 +121,10 @@ final class TraceableSubscriber implements EventSubscriberInterface
         $traceable = $this->resolveControllerTraceable($controller);
 
         if (!$traceable instanceof Traceable) {
+            return;
+        }
+
+        if ($traceable->handler !== TraceableHandler::CONTROLLER) {
             return;
         }
 
@@ -154,13 +168,12 @@ final class TraceableSubscriber implements EventSubscriberInterface
         $scope = Context::storage()->attach($span->storeInContext(Context::getCurrent()));
         $request = $event->getRequest();
 
-        $request->attributes->set(self::HTTP_SPAN_ATTRIBUTE, $span);
-        $request->attributes->set(self::HTTP_SCOPE_ATTRIBUTE, $scope);
+        $this->contextMap[$request] = new TraceableTracingContext(span: $span, scope: $scope);
     }
 
     public function onHttpException(ExceptionEvent $event): void
     {
-        $span = $event->getRequest()->attributes->get(self::HTTP_SPAN_ATTRIBUTE);
+        $span = ($this->contextMap[$event->getRequest()] ?? null)?->span;
 
         if (!$span instanceof SpanInterface) {
             return;
@@ -173,19 +186,13 @@ final class TraceableSubscriber implements EventSubscriberInterface
 
     public function onHttpTerminate(TerminateEvent $event): void
     {
-        $request = $event->getRequest();
-        $span = $request->attributes->get(self::HTTP_SPAN_ATTRIBUTE);
+        $context = $this->contextMap[$event->getRequest()] ?? null;
 
-        if (!$span instanceof SpanInterface) {
+        if (!$context instanceof TraceableTracingContext) {
             return;
         }
 
-        $scope = $request->attributes->get(self::HTTP_SCOPE_ATTRIBUTE);
-        if ($scope instanceof ContextStorageScopeInterface) {
-            $scope->detach();
-        }
-
-        $span->end();
+        $context->finish();
     }
 
     public function onConsoleCommand(ConsoleCommandEvent $event): void
@@ -200,6 +207,10 @@ final class TraceableSubscriber implements EventSubscriberInterface
         $traceable = $this->resolveClassTraceable($reflection);
 
         if (!$traceable instanceof Traceable) {
+            return;
+        }
+
+        if ($traceable->handler !== TraceableHandler::COMMAND) {
             return;
         }
 

@@ -341,18 +341,25 @@ services:
 
 #### Phase 2.2 — `TraceableHookCompilerPass`
 
-A second compiler pass registered alongside `OpenTelemetryCompilerPass` in `OpenTelemetryBundle::build()`.
+A second compiler pass registered in `OpenTelemetryBundle::build()` at `PassConfig::TYPE_BEFORE_REMOVING` priority.
+This ensures all Symfony autoconfiguration tags (`controller.service_arguments`, `routing.controller`) are already
+applied before the pass runs, making controller/command detection reliable.
+
 It scans every container definition for classes that carry the `#[Traceable]` attribute
 (at class or method level) and builds a static hook map for `TraceableHookSubscriber`:
 
 ```
-TraceableHookCompilerPass::process()
+TraceableHookCompilerPass::process()  [runs at TYPE_BEFORE_REMOVING — all DI tags are resolved]
 │
 ├── iterate all container definitions
 │   ├── skip abstract / synthetic / placeholder definitions
-│   └── reflect each concrete class
-│       ├── read class-level #[Traceable] (fallback for all public methods)
-│       └── read method-level #[Traceable] (takes priority over class-level)
+│   └── reflect each concrete class with #[Traceable] on class or any method
+│       ├── handler = CONTROLLER or COMMAND → skip (TraceableSubscriber handles it)
+│       └── handler = null (auto-detect):
+│           ├── is_a Command → skip
+│           ├── hasTag('controller.service_arguments') → skip
+│           ├── hasTag('routing.controller') → skip
+│           └── otherwise → register hook
 │
 ├── deduplicate hooks by key "ClassName::methodName"
 │   └── only one entry per method survives (method-level wins over class-level)
@@ -1672,30 +1679,74 @@ Reads the `#[Traceable]` PHP attribute from controller classes/methods or consol
 
 At container compile time (`TraceableHookCompilerPass`), scans all registered services for the `#[Traceable]` attribute on class or method level. Registers an OpenTelemetry `hook()` for each matching public method. This uses the `ext-opentelemetry` hook API and does not require any event listener.
 
-### Using the `#[Traceable]` attribute
+### The `#[Traceable]` attribute
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | `string\|null` | `null` | Custom span name. Defaults to `class::method`, `traceable.controller`, or `traceable.console` depending on context. |
+| `attributes` | `array<string, mixed>` | `[]` | Custom key-value pairs added as span attributes. |
+| `handler` | `TraceableHandler` | `TraceableHandler::HOOK` | Selects which subscriber processes this attribute. See values below. |
+
+#### `TraceableHandler` values
+
+| Value | Handled by | Span lifecycle | Use when |
+|-------|-----------|----------------|----------|
+| `TraceableHandler::HOOK` (**default**) | `TraceableHookSubscriber` | method entry → method exit | Regular services |
+| `TraceableHandler::CONTROLLER` | `TraceableSubscriber::onController` | `KernelEvents::CONTROLLER` → `KernelEvents::TERMINATE` | Controllers (all routes configs) |
+| `TraceableHandler::COMMAND` | `TraceableSubscriber::onConsoleCommand` | `ConsoleEvents::COMMAND` → `ConsoleEvents::TERMINATE` + exit code | Console commands |
+
+> **Rule:** `#[Traceable]` without `handler` defaults to `TraceableHandler::HOOK` — processed by `TraceableHookSubscriber`.
+> For controllers use `handler: TraceableHandler::CONTROLLER`, for console commands use `handler: TraceableHandler::COMMAND`.
+
+#### Examples
 
 ```php
-use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\Traceable;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Attribute\{Traceable, TraceableHandler};
 
-// On a controller class (traces all actions)
-#[Traceable(name: 'my.controller', attributes: ['app.module' => 'orders'])]
+// Controller — always set handler: CONTROLLER
+#[Traceable(name: 'orders.controller', handler: TraceableHandler::CONTROLLER, attributes: ['app.module' => 'orders'])]
 class OrderController
 {
+    #[Route('/orders')]
     public function index(): Response { ... }
 }
 
-// On a specific controller action
+// Controller with routes in YAML/XML
+#[Traceable(name: 'conversation.controller', handler: TraceableHandler::CONTROLLER)]
+class ConversationController
+{
+    public function list(Request $request): Response { ... }
+}
+
+// Specific controller action only
 class ProductController
 {
-    #[Traceable(name: 'product.show')]
+    #[Traceable(name: 'product.show', handler: TraceableHandler::CONTROLLER)]
     public function show(int $id): Response { ... }
 }
 
-// On a service method (traced via hook)
+// Regular service — default handler is HOOK, no need to specify
 class PaymentService
 {
     #[Traceable(name: 'payment.process', attributes: ['app.domain' => 'billing'])]
     public function process(Payment $payment): void { ... }
+}
+
+// Whole service class traced via hook
+#[Traceable(name: 'order.service')]
+class OrderService
+{
+    public function create(array $data): Order { ... }
+    public function cancel(int $id): void { ... }
+}
+
+// Console command — always set handler: COMMAND
+#[Traceable(name: 'import.command', handler: TraceableHandler::COMMAND)]
+class ImportDataCommand extends Command
+{
+    protected function execute(InputInterface $input, OutputInterface $output): int { ... }
 }
 ```
 

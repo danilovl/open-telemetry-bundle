@@ -13,5 +13,6 @@ final readonly class Traceable
     public function __construct(
         public ?string $name = null,
         public array $attributes = [],
+        public TraceableHandler $handler = TraceableHandler::HOOK
     ) {}
 }

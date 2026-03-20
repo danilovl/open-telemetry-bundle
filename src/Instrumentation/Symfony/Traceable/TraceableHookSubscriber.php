@@ -83,7 +83,7 @@ final class TraceableHookSubscriber implements EventSubscriberInterface
     {
         return [
             KernelEvents::REQUEST => ['initializeHooks', 2_048],
-            ConsoleEvents::COMMAND => ['initializeHooksForConsole', 2_048],
+            ConsoleEvents::COMMAND => ['initializeHooksForConsole', 2_048]
         ];
     }
 
@@ -135,7 +135,7 @@ final class TraceableHookSubscriber implements EventSubscriberInterface
                 pre: static function (...$args) use (&$stack, $traceableName, $traceableAttributes, $attributeProviders, $className, $methodName, $traceableSpanNameHandlers, $traceableTraceIgnores, $instrumentation): void {
                     $spanName = is_string($traceableName) && $traceableName !== ''
                         ? $traceableName
-                        : sprintf('traceable.%s::%s', $className, $methodName);
+                        : sprintf('traceable %s::%s', $className, $methodName);
 
                     $context = [
                         'operation' => 'service_method',
