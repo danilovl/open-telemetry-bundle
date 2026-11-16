@@ -7,7 +7,7 @@ use Danilovl\AsyncBundle\Event\{
     AsyncPreCallEvent
 };
 use Danilovl\OpenTelemetryBundle\Instrumentation\Async\Interfaces\AsyncMetricsInterface;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind
@@ -38,7 +38,7 @@ final class AsyncTracingSubscriber implements EventSubscriberInterface
     private array $startTimes = [];
 
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         private readonly ?AsyncMetricsInterface $asyncMetrics = null,
     ) {}
 

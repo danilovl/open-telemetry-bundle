@@ -14,7 +14,10 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\{
     TracingHelper
 };
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\{
+    HookRegistry,
+    ScopedInstrumentation
+};
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind,
@@ -31,13 +34,26 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Throwable;
-use function OpenTelemetry\Instrumentation\hook;
 
 final class TraceableHookSubscriber implements EventSubscriberInterface
 {
     public const string INSTRUMENTATION_NAME = 'danilovl.traceable';
 
     private bool $initialized = false;
+
+    private static ?self $active = null;
+
+    /**
+     * Open frames per hooked method; null when the call is not traced.
+     *
+     * @var array<string, list<array{scope: ContextStorageScopeInterface, span: SpanInterface, start_time: int|float, class: string, method: string}|null>>
+     */
+    private static array $stacks = [];
+
+    /**
+     * @var array<string, array{class: string, method: string, name: string|null, attributes: array<string, mixed>}>
+     */
+    private array $hookDefinitions = [];
 
     /**
      * @param array<int, array{class: string, method: string, name: string|null, attributes: array<string, mixed>}> $hooks
@@ -47,7 +63,7 @@ final class TraceableHookSubscriber implements EventSubscriberInterface
      * @param iterable<TraceableTraceIgnoreInterface> $traceableTraceIgnores
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::TRACEABLE_ATTRIBUTE_PROVIDER)]
         private readonly iterable $attributeProviders = [],
         private readonly array $hooks = [],
@@ -107,133 +123,156 @@ final class TraceableHookSubscriber implements EventSubscriberInterface
             return;
         }
 
-        if (!function_exists('OpenTelemetry\\Instrumentation\\hook')) {
-            $this->initialized = true;
+        $this->initialized = true;
+
+        if (!HookRegistry::isAvailable()) {
+            return;
+        }
+
+        // hooks are process-wide, the current container's subscriber handles them
+        self::$active = $this;
+
+        foreach ($this->hooks as $hookDefinition) {
+            $key = $hookDefinition['class'] . '::' . $hookDefinition['method'];
+            $this->hookDefinitions[$key] = $hookDefinition;
+
+            HookRegistry::hook(
+                owner: self::class,
+                class: $hookDefinition['class'],
+                method: $hookDefinition['method'],
+                pre: static function (mixed ...$args) use ($key): void {
+                    self::$active?->onHookPre($key, $args);
+                },
+                post: static function (mixed ...$args) use ($key): void {
+                    self::$active?->onHookPost($key, $args);
+                }
+            );
+        }
+    }
+
+    /**
+     * @param array<int|string, mixed> $args
+     */
+    private function onHookPre(string $key, array $args): void
+    {
+        $hookDefinition = $this->hookDefinitions[$key] ?? null;
+
+        // a frame is pushed in every case, so post always pops its own pre
+        if ($hookDefinition === null) {
+            self::$stacks[$key][] = null;
 
             return;
         }
 
-        $this->initialized = true;
+        $className = $hookDefinition['class'];
+        $methodName = $hookDefinition['method'];
+        $traceableName = $hookDefinition['name'];
+        $traceableAttributes = $hookDefinition['attributes'];
 
-        foreach ($this->hooks as $hookDefinition) {
-            $className = $hookDefinition['class'];
-            $methodName = $hookDefinition['method'];
+        $spanName = is_string($traceableName) && $traceableName !== ''
+            ? $traceableName
+            : sprintf('traceable %s::%s', $className, $methodName);
 
-            /** @var array<int, array{scope: ContextStorageScopeInterface|null, span: SpanInterface|null, start_time: int|null}> $stack */
-            $stack = [];
-            $traceableName = $hookDefinition['name'];
-            $traceableAttributes = $hookDefinition['attributes'];
-            $attributeProviders = $this->attributeProviders;
-            $traceableMetrics = $this->traceableMetrics;
-            $traceableSpanNameHandlers = $this->traceableSpanNameHandlers;
-            $traceableTraceIgnores = $this->traceableTraceIgnores;
-            $instrumentation = $this->instrumentation;
+        $context = [
+            'operation' => 'service_method',
+            'class' => $className,
+            'method' => $methodName,
+            'arguments' => $args,
+            'traceable_name' => $traceableName,
+            'traceable_attributes' => $traceableAttributes,
+        ];
 
-            hook(
-                class: $className,
-                function: $methodName,
-                pre: static function (...$args) use (&$stack, $traceableName, $traceableAttributes, $attributeProviders, $className, $methodName, $traceableSpanNameHandlers, $traceableTraceIgnores, $instrumentation): void {
-                    $spanName = is_string($traceableName) && $traceableName !== ''
-                        ? $traceableName
-                        : sprintf('traceable %s::%s', $className, $methodName);
-
-                    $context = [
-                        'operation' => 'service_method',
-                        'class' => $className,
-                        'method' => $methodName,
-                        'arguments' => $args,
-                        'traceable_name' => $traceableName,
-                        'traceable_attributes' => $traceableAttributes,
-                    ];
-
-                    foreach ($traceableSpanNameHandlers as $traceableSpanNameHandler) {
-                        $spanName = $traceableSpanNameHandler->process($spanName, $context);
-                    }
-
-                    foreach ($traceableTraceIgnores as $traceableTraceIgnore) {
-                        if ($traceableTraceIgnore->shouldIgnore($spanName, $context)) {
-                            $stack[] = ['scope' => null, 'span' => null, 'start_time' => null];
-
-                            return;
-                        }
-                    }
-
-                    $startTime = hrtime(true);
-
-                    /** @var non-empty-string $spanNameNonEmpty */
-                    $spanNameNonEmpty = $spanName === '' ? 'traceable.unknown' : $spanName;
-
-                    $span = $instrumentation
-                        ->tracer()
-                        ->spanBuilder($spanNameNonEmpty)
-                        ->setSpanKind(SpanKind::KIND_INTERNAL)
-                        ->setAttribute('transaction.type', 'service_method')
-                        ->setAttribute('traceable.type', 'service_method')
-                        ->setAttribute('traceable.class', $className)
-                        ->setAttribute('traceable.method', $methodName)
-                        ->startSpan();
-
-                    $span->setAttributes(TracingHelper::normalizeAttributeValues($traceableAttributes));
-
-                    SpanAttributeEnricher::enrich(
-                        span: $span,
-                        providers: $attributeProviders,
-                        context: [
-                            'class' => $className,
-                            'method' => $methodName,
-                            'arguments' => $args,
-                        ]
-                    );
-
-                    $scope = Context::storage()->attach($span->storeInContext(Context::getCurrent()));
-                    $stack[] = [
-                        'scope' => $scope,
-                        'span' => $span,
-                        'start_time' => $startTime,
-                    ];
-                },
-                post: static function (...$args) use (&$stack, $className, $methodName, $traceableMetrics): void {
-                    $hookContext = array_pop($stack);
-
-                    if (!is_array($hookContext)) {
-                        return;
-                    }
-
-                    $scope = $hookContext['scope'] ?? null;
-                    $span = $hookContext['span'] ?? null;
-                    $startTime = $hookContext['start_time'] ?? null;
-
-                    if (!$span instanceof SpanInterface) {
-                        return;
-                    }
-
-                    $throwable = null;
-                    foreach ($args as $argument) {
-                        if ($argument instanceof Throwable) {
-                            $throwable = $argument;
-                            $span->recordException($argument);
-                            $span->setStatus(StatusCode::STATUS_ERROR, $argument->getMessage());
-
-                            break;
-                        }
-                    }
-
-                    if ($scope instanceof ContextStorageScopeInterface) {
-                        $scope->detach();
-                    }
-
-                    $span->end();
-
-                    if (is_numeric($startTime)) {
-                        $durationMs = (hrtime(true) - $startTime) / 1_000_000;
-                        $traceableMetrics?->recordServiceMethod($className, $methodName, $durationMs);
-
-                        if ($throwable instanceof Throwable) {
-                            $traceableMetrics?->recordServiceMethodError($className, $methodName, $throwable);
-                        }
-                    }
-                }
-            );
+        foreach ($this->traceableSpanNameHandlers as $traceableSpanNameHandler) {
+            $spanName = $traceableSpanNameHandler->process($spanName, $context);
         }
+
+        foreach ($this->traceableTraceIgnores as $traceableTraceIgnore) {
+            if ($traceableTraceIgnore->shouldIgnore($spanName, $context)) {
+                self::$stacks[$key][] = null;
+
+                return;
+            }
+        }
+
+        $startTime = hrtime(true);
+
+        /** @var non-empty-string $spanNameNonEmpty */
+        $spanNameNonEmpty = $spanName === '' ? 'traceable.unknown' : $spanName;
+
+        $span = $this->instrumentation
+            ->tracer()
+            ->spanBuilder($spanNameNonEmpty)
+            ->setSpanKind(SpanKind::KIND_INTERNAL)
+            ->setAttribute('transaction.type', 'service_method')
+            ->setAttribute('traceable.type', 'service_method')
+            ->setAttribute('traceable.class', $className)
+            ->setAttribute('traceable.method', $methodName)
+            ->startSpan();
+
+        $span->setAttributes(TracingHelper::normalizeAttributeValues($traceableAttributes));
+
+        SpanAttributeEnricher::enrich(
+            span: $span,
+            providers: $this->attributeProviders,
+            context: [
+                'class' => $className,
+                'method' => $methodName,
+                'arguments' => $args,
+            ]
+        );
+
+        $scope = Context::storage()->attach($span->storeInContext(Context::getCurrent()));
+
+        self::$stacks[$key][] = [
+            'scope' => $scope,
+            'span' => $span,
+            'start_time' => $startTime,
+            'class' => $className,
+            'method' => $methodName,
+        ];
+    }
+
+    /**
+     * @param array<int|string, mixed> $args
+     */
+    private function onHookPost(string $key, array $args): void
+    {
+        $frame = array_pop(self::$stacks[$key]);
+
+        if ($frame === null) {
+            return;
+        }
+
+        $span = $frame['span'];
+        $throwable = null;
+
+        foreach ($args as $argument) {
+            if ($argument instanceof Throwable) {
+                $throwable = $argument;
+                $span->recordException($argument);
+                $span->setStatus(StatusCode::STATUS_ERROR, $argument->getMessage());
+
+                break;
+            }
+        }
+
+        $frame['scope']->detach();
+        $span->end();
+
+        $durationMs = (hrtime(true) - $frame['start_time']) / 1_000_000;
+        $this->traceableMetrics?->recordServiceMethod($frame['class'], $frame['method'], $durationMs);
+
+        if ($throwable instanceof Throwable) {
+            $this->traceableMetrics?->recordServiceMethodError($frame['class'], $frame['method'], $throwable);
+        }
+    }
+
+    /** @internal tests only */
+    public function getOpenSpanCount(): int
+    {
+        return array_sum(array_map(
+            static fn (array $frames): int => count(array_filter($frames, static fn (?array $frame): bool => $frame !== null)),
+            self::$stacks
+        ));
     }
 }

@@ -110,9 +110,11 @@ class SpanRecordingTest extends TestCase
         yield 'home method' => ['/', 'GET /', 'http.request.method', 'GET'];
         yield 'home path' => ['/', 'GET /', 'url.path', '/'];
         yield 'home status' => ['/', 'GET /', 'http.response.status_code', 200];
-        yield 'home route' => ['/', 'GET /', 'http.route', 'home'];
+        yield 'home route' => ['/', 'GET /', 'http.route', '/'];
+        yield 'home route name' => ['/', 'GET /', 'symfony.route.name', 'home'];
         yield 'home server' => ['/', 'GET /', 'server.address', 'localhost'];
-        yield 'api users route' => ['/api/users', 'GET /api/users', 'http.route', 'api_users'];
+        yield 'api users route' => ['/api/users', 'GET /api/users', 'http.route', '/api/users'];
+        yield 'api users route name' => ['/api/users', 'GET /api/users', 'symfony.route.name', 'api_users'];
         yield 'api users status' => ['/api/users', 'GET /api/users', 'http.response.status_code', 200];
     }
 

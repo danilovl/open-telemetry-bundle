@@ -6,22 +6,27 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\TracerProviderFactoryI
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Resource\DefaultResourceInfoFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Trace\Exporter\InstrumentationFilteringSpanExporter;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Trace\TraceSpanExporterInterface;
+use OpenTelemetry\API\Behavior\LogsMessagesTrait;
 use OpenTelemetry\API\Common\Time\SystemClock;
-use OpenTelemetry\Contrib\Otlp\SpanExporterFactory;
-use OpenTelemetry\SDK\Trace\Sampler\{
-    AlwaysOnSampler,
-    ParentBased
-};
+use OpenTelemetry\SDK\Sdk;
 use OpenTelemetry\SDK\Trace\SpanProcessor\BatchSpanProcessor;
 use OpenTelemetry\SDK\Trace\{
+    ExporterFactory,
+    NoopTracerProvider,
+    SamplerFactory,
     SpanExporterInterface,
+    SpanProcessorFactory,
     SpanProcessorInterface,
     TracerProvider,
     TracerProviderInterface
 };
+use Throwable;
 
+/** Honours OTEL_SDK_DISABLED, OTEL_TRACES_SAMPLER, OTEL_TRACES_EXPORTER and OTEL_PHP_TRACES_PROCESSOR. */
 final readonly class DefaultTracerProviderFactory implements TracerProviderFactoryInterface
 {
+    use LogsMessagesTrait;
+
     public function __construct(private DefaultResourceInfoFactory $resourceInfoFactory) {}
 
     /**
@@ -30,14 +35,18 @@ final readonly class DefaultTracerProviderFactory implements TracerProviderFacto
      */
     public function create(iterable $processors = [], iterable $exporters = []): TracerProviderInterface
     {
-        $resource = $this->resourceInfoFactory->createResource();
-        $exporter = (new SpanExporterFactory)->create();
-        $processor = new BatchSpanProcessor($exporter, SystemClock::create());
+        if (Sdk::isDisabled()) {
+            return new NoopTracerProvider;
+        }
 
         $builder = TracerProvider::builder()
-            ->addSpanProcessor($processor)
-            ->setResource($resource)
-            ->setSampler(new ParentBased(new AlwaysOnSampler));
+            ->setResource($this->resourceInfoFactory->createResource())
+            ->setSampler(new SamplerFactory()->create());
+
+        $defaultExporter = $this->createDefaultExporter();
+        if ($defaultExporter !== null) {
+            $builder->addSpanProcessor(new SpanProcessorFactory()->create($defaultExporter));
+        }
 
         foreach ($processors as $spanProcessor) {
             $builder->addSpanProcessor($spanProcessor);
@@ -52,5 +61,16 @@ final readonly class DefaultTracerProviderFactory implements TracerProviderFacto
         }
 
         return $builder->build();
+    }
+
+    private function createDefaultExporter(): ?SpanExporterInterface
+    {
+        try {
+            return new ExporterFactory()->create();
+        } catch (Throwable $throwable) {
+            self::logWarning('Unable to create the default span exporter: ' . $throwable->getMessage());
+
+            return null;
+        }
     }
 }

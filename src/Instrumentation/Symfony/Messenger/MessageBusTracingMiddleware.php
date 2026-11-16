@@ -14,11 +14,13 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\{
     TracingHelper
 };
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanKind,
     StatusCode
 };
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Stamp\TraceContextStamp;
+use OpenTelemetry\API\Globals;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\SemConv\Attributes\ErrorAttributes;
 use OpenTelemetry\SemConv\Incubating\Attributes\MessagingIncubatingAttributes;
@@ -41,13 +43,19 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
     public const string INSTRUMENTATION_NAME = 'danilovl.messenger';
 
     /**
+     * Literal on purpose: sem-conv < 1.44 has only MESSAGING_SYSTEM, >= 1.44 only MESSAGING_SYSTEM_NAME
+     * (renamed to messaging.system.name), and the bundle supports both.
+     */
+    public const string ATTRIBUTE_MESSAGING_SYSTEM = 'messaging.system';
+
+    /**
      * @param iterable<MessengerAttributeProviderInterface> $attributeProviders
      * @param iterable<MessengerSpanNameHandlerInterface> $messengerSpanNameHandlers
      * @param iterable<MessengerTraceIgnoreInterface> $messengerTraceIgnores
      * @param MessengerMetricsInterface|null $messengerMetrics
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::MESSENGER_ATTRIBUTE_PROVIDER)]
         private readonly iterable $attributeProviders = [],
         #[AutowireIterator(InstrumentationTags::MESSENGER_SPAN_NAME_HANDLER)]
@@ -103,9 +111,17 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
         /** @var non-empty-string $spanNameNonEmpty */
         $spanNameNonEmpty = $spanName === '' ? sprintf('messenger.%s', $operation) : $spanName;
 
+        $parentContext = Context::getCurrent();
+        $traceContextStamp = $envelope->last(TraceContextStamp::class);
+
+        if ($spanKind === SpanKind::KIND_CONSUMER && $traceContextStamp instanceof TraceContextStamp) {
+            $parentContext = Globals::propagator()->extract($traceContextStamp->getHeaders(), null, $parentContext);
+        }
+
         $span = $this->instrumentation
             ->tracer()
             ->spanBuilder($spanNameNonEmpty)
+            ->setParent($parentContext)
             ->setSpanKind($spanKind)
             ->setAttribute('messaging.message.type', $message::class);
 
@@ -119,9 +135,19 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
             context: ['envelope' => $envelope, 'message' => $message]
         );
 
-        $scope = Context::storage()->attach(
-            $span->storeInContext(Context::getCurrent())
-        );
+        $spanContext = $span->storeInContext($parentContext);
+        $scope = Context::storage()->attach($spanContext);
+
+        // retries keep the original stamp
+        if ($spanKind === SpanKind::KIND_PRODUCER && !$traceContextStamp instanceof TraceContextStamp) {
+            $headers = [];
+            Globals::propagator()->inject($headers, null, $spanContext);
+
+            if ($headers !== []) {
+                /** @var array<string, string> $headers */
+                $envelope = $envelope->with(new TraceContextStamp($headers));
+            }
+        }
 
         try {
             $handledEnvelope = $stack->next()->handle($envelope, $stack);
@@ -129,6 +155,12 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
             $handledAttributes = $this->buildMessagingAttributes($handledEnvelope, $operation);
 
             $span->setAttributes(TracingHelper::normalizeAttributeValues($handledAttributes));
+
+            // the transport is known only after sending
+            $handledDestination = $handledAttributes[MessagingIncubatingAttributes::MESSAGING_DESTINATION_NAME] ?? '';
+            if ($spanNameNonEmpty === sprintf('messenger.%s', $operation) && $handledDestination !== '') {
+                $span->updateName(sprintf('%s %s', $operation, $handledDestination));
+            }
 
             $durationMs = (hrtime(true) - $startTime) / 1_000_000;
 
@@ -173,7 +205,7 @@ final class MessageBusTracingMiddleware implements MiddlewareInterface
         $transportName = $this->resolveTransportName($envelope);
         $messagingSystem = $this->resolveMessagingSystem($envelope, $transportName);
 
-        $attributes[MessagingIncubatingAttributes::MESSAGING_SYSTEM] = $messagingSystem;
+        $attributes[self::ATTRIBUTE_MESSAGING_SYSTEM] = $messagingSystem;
         $attributes[MessagingIncubatingAttributes::MESSAGING_OPERATION_NAME] = $operation;
 
         if ($transportName !== null && $transportName !== '') {

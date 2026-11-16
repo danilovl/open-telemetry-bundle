@@ -2,6 +2,7 @@
 
 namespace Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpKernel\Metrics;
 
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpKernel\HttpRequestTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpKernel\Interfaces\HttpServerMetricsInterface;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\MetricsRecorderInterface;
 use Symfony\Component\HttpFoundation\Request;
@@ -28,10 +29,15 @@ final readonly class DefaultHttpServerMetrics implements HttpServerMetricsInterf
         }
 
         $attributes = [
-            'http.method' => $request->getMethod(),
-            'http.route' => $this->resolveRoute($request),
-            'http.status_code' => $statusCode,
+            'http.request.method' => $request->getMethod(),
+            'http.response.status_code' => $statusCode,
+            'url.scheme' => $request->getScheme(),
+            ...$this->resolveRouteAttributes($request),
         ];
+
+        if ($statusCode >= 500) {
+            $attributes['error.type'] = (string) $statusCode;
+        }
 
         $this->metricsRecorder->addCounter(
             name: 'http.server.requests_total',
@@ -40,10 +46,11 @@ final readonly class DefaultHttpServerMetrics implements HttpServerMetricsInterf
         );
 
         $this->metricsRecorder->recordHistogram(
-            name: 'http.server.duration_ms',
-            amount: $durationMs,
+            name: 'http.server.request.duration',
+            amount: $durationMs / 1_000,
             attributes: $attributes,
-            unit: 'ms'
+            unit: 's',
+            description: 'Duration of HTTP server requests.'
         );
 
         $this->metricsRecorder->recordGauge(
@@ -61,9 +68,9 @@ final readonly class DefaultHttpServerMetrics implements HttpServerMetricsInterf
         }
 
         $attributes = [
-            'http.method' => $request->getMethod(),
-            'http.route' => $this->resolveRoute($request),
+            'http.request.method' => $request->getMethod(),
             'error.type' => $exception::class,
+            ...$this->resolveRouteAttributes($request),
         ];
 
         $this->metricsRecorder->addCounter(
@@ -80,14 +87,17 @@ final readonly class DefaultHttpServerMetrics implements HttpServerMetricsInterf
         );
     }
 
-    private function resolveRoute(Request $request): string
+    /**
+     * @return array<string, string>
+     */
+    private function resolveRouteAttributes(Request $request): array
     {
-        $route = $request->attributes->get('_route');
+        $template = $request->attributes->get(HttpRequestTracingSubscriber::ROUTE_TEMPLATE_ATTRIBUTE);
 
-        if (is_string($route) && $route !== '') {
-            return $route;
+        if (is_string($template) && $template !== '') {
+            return ['http.route' => $template];
         }
 
-        return 'unknown';
+        return [];
     }
 }

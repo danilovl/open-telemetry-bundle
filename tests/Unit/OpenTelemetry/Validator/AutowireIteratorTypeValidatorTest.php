@@ -17,8 +17,12 @@ class AutowireIteratorTypeValidatorTest extends TestCase
      * @param class-string<object> $type
      */
     #[DataProvider('provideValidateReturnsValidatedArrayCases')]
-    public function testValidateReturnsValidatedArray(string $argName, array $items, string $type, int $expectedCount): void
-    {
+    public function testValidateReturnsValidatedArray(
+        string $argName,
+        array $items,
+        string $type,
+        int $expectedCount,
+    ): void {
         $result = AutowireIteratorTypeValidator::validate($argName, $items, $type);
         $this->assertCount($expectedCount, $result);
     }

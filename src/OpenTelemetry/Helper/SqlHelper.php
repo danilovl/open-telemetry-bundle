@@ -22,6 +22,33 @@ readonly class SqlHelper
         return sprintf('db.%s', $op);
     }
 
+    /**
+     * @param bool $doubleQuotedStrings MySQL/MariaDB: "..." is a string literal, elsewhere an identifier
+     */
+    public static function sanitize(string $sql, bool $doubleQuotedStrings = false): string
+    {
+        if ($doubleQuotedStrings) {
+            // "string" with "" / \" escapes
+            $sql = preg_replace('~"(?:[^"\\\\]|\\\\.|"")*"~s', '?', $sql) ?? $sql;
+        }
+
+        $result = preg_replace(
+            [
+                // 'string' with '' / \' escapes and N/E/X/B prefix
+                "~(?<![\\w])[NnEeXxBb]?'(?:[^'\\\\]|\\\\.|'')*'~s",
+                // PostgreSQL $$string$$
+                '~\$([A-Za-z_]\w*|)\$.*?\$\1\$~s',
+                '~\b0x[0-9a-fA-F]+\b~',
+                // numbers, but not identifiers or placeholders (?1, :p1, $1)
+                '~(?<![\w$:?.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b~',
+            ],
+            '?',
+            $sql
+        );
+
+        return $result ?? $sql;
+    }
+
     public static function simplifySql(string $sql): string
     {
         $sql = (string) preg_replace('~\s+~', ' ', mb_trim($sql));

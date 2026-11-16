@@ -8,7 +8,8 @@ use Danilovl\OpenTelemetryBundle\DependencyInjection\{
 };
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\DefaultDoctrineSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\TracingRedis;
+use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\PredisHookInstrumentation;
+use Danilovl\OpenTelemetryBundle\Tests\Mock\DependencyInjection\TestableOpenTelemetryExtension;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\ConsoleTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\SpanNameHandler\DefaultEventSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\TraceIgnore\DefaultEventTraceIgnore;
@@ -28,7 +29,9 @@ class OpenTelemetryExtensionTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->extension = new OpenTelemetryExtension;
+        $extension = new TestableOpenTelemetryExtension;
+        $extension->hookApiOverride = true;
+        $this->extension = $extension;
     }
 
     /**
@@ -255,9 +258,9 @@ class OpenTelemetryExtensionTest extends TestCase
             ]
         ]);
 
-        $defaultServiceId = InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default';
-
-        $this->assertTrue($container->hasDefinition($defaultServiceId));
+        $this->assertTrue($container->hasDefinition(DefaultLongRunningCommand::class));
+        $this->assertTrue($container->getDefinition(DefaultLongRunningCommand::class)->hasTag(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND));
+        $this->assertCount(1, $container->findTaggedServiceIds(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND));
     }
 
     public function testLongRunningCommandNotRegisteredWhenDisabled(): void
@@ -273,9 +276,10 @@ class OpenTelemetryExtensionTest extends TestCase
             ]
         ]);
 
-        $defaultServiceId = InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default';
-
-        $this->assertFalse($container->hasDefinition($defaultServiceId));
+        $this->assertFalse(
+            $container->hasDefinition(DefaultLongRunningCommand::class)
+            && !$container->getDefinition(DefaultLongRunningCommand::class)->hasTag('container.excluded')
+        );
     }
 
     public function testDefaultLongRunningCommandClass(): void
@@ -286,10 +290,10 @@ class OpenTelemetryExtensionTest extends TestCase
             ]
         ]);
 
-        $defaultServiceId = InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default';
-        $definition = $container->getDefinition($defaultServiceId);
+        $definition = $container->getDefinition(DefaultLongRunningCommand::class);
 
-        $this->assertSame(DefaultLongRunningCommand::class, $definition->getClass());
+        $this->assertSame(DefaultLongRunningCommand::class, $definition->getClass() ?? DefaultLongRunningCommand::class);
+        $this->assertFalse($definition->hasTag('container.excluded'));
     }
 
     public function testRedisInstrumentationRegisteredWhenEnabled(): void
@@ -302,7 +306,7 @@ class OpenTelemetryExtensionTest extends TestCase
             ]
         ]);
 
-        $this->assertTrue($container->hasDefinition(TracingRedis::class));
+        $this->assertTrue($container->hasDefinition(PredisHookInstrumentation::class));
     }
 
     public function testRedisInstrumentationRemovedWhenDisabled(): void
@@ -317,7 +321,7 @@ class OpenTelemetryExtensionTest extends TestCase
             ]
         ]);
 
-        $this->assertFalse($container->hasDefinition(TracingRedis::class));
+        $this->assertFalse($container->hasDefinition(PredisHookInstrumentation::class));
     }
 
     public static function provideExpectedCoreDefinitionsExistCases(): Generator

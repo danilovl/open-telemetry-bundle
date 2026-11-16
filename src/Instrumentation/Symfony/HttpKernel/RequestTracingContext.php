@@ -9,6 +9,10 @@ final class RequestTracingContext
 {
     private bool $finished = false;
 
+    public bool $metricsRecorded = false;
+
+    public bool $exceptionRecorded = false;
+
     public function __construct(
         public readonly SpanInterface $span,
         public readonly ContextStorageScopeInterface $scope,
@@ -24,6 +28,11 @@ final class RequestTracingContext
         $this->finished = true;
         $this->scope->detach();
         $this->span->end();
+    }
+
+    public function isFinished(): bool
+    {
+        return $this->finished;
     }
 
     public function __destruct()

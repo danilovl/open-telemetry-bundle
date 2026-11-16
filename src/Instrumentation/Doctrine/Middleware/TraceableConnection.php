@@ -19,6 +19,7 @@ class TraceableConnection extends AbstractConnectionMiddleware
         private readonly Tracer $tracer,
         private readonly string $dbSystem = 'other_sql',
         private readonly ?string $dbName = null,
+        private readonly bool $sanitizeSql = true,
     ) {
         parent::__construct($connection);
     }
@@ -44,7 +45,7 @@ class TraceableConnection extends AbstractConnectionMiddleware
             name: $spanName,
             callback: function (?SpanInterface $span) use ($sql): Result {
                 if ($span instanceof SpanInterface) {
-                    $span->setAttribute(DbAttributes::DB_QUERY_TEXT, $sql);
+                    $span->setAttribute(DbAttributes::DB_QUERY_TEXT, $this->queryText($sql));
                 }
 
                 return parent::query($sql);
@@ -68,7 +69,7 @@ class TraceableConnection extends AbstractConnectionMiddleware
             name: $spanName,
             callback: function (?SpanInterface $span) use ($sql): int {
                 if ($span instanceof SpanInterface) {
-                    $span->setAttribute(DbAttributes::DB_QUERY_TEXT, $sql);
+                    $span->setAttribute(DbAttributes::DB_QUERY_TEXT, $this->queryText($sql));
                 }
 
                 return (int) parent::exec($sql);
@@ -125,5 +126,17 @@ class TraceableConnection extends AbstractConnectionMiddleware
                 DoctrineContextAttribute::NAME->value => $this->dbName,
             ]
         );
+    }
+
+    /** query()/exec() SQL is not parameterized. */
+    private function queryText(string $sql): string
+    {
+        if (!$this->sanitizeSql) {
+            return $sql;
+        }
+
+        $doubleQuotedStrings = in_array($this->dbSystem, [DbAttributes::DB_SYSTEM_NAME_VALUE_MYSQL, DbAttributes::DB_SYSTEM_NAME_VALUE_MARIADB], true);
+
+        return SqlHelper::sanitize($sql, $doubleQuotedStrings);
     }
 }

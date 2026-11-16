@@ -65,9 +65,9 @@ The bundle initializes OpenTelemetry providers manually. If the PHP extension au
 OTEL_PHP_AUTOLOAD_ENABLED=false
 ```
 
-### Required environment variables
+### Environment variables
 
-The bundle uses the OpenTelemetry SDK factories to create exporters, which read from standard OpenTelemetry environment variables:
+The providers are built with the OpenTelemetry SDK factories, so the standard environment variables apply:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
@@ -75,7 +75,27 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_SERVICE_NAME=my-app
 ```
 
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `OTEL_SDK_DISABLED` | `false` | `true` → no-op providers, nothing is exported |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` | `none` disables the default exporter (e.g. in dev/CI without a collector), `console` prints to stdout |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | e.g. `parentbased_traceidratio` + `0.1` to sample 10 % of traces in production |
+| `OTEL_PHP_TRACES_PROCESSOR` / `OTEL_PHP_LOGS_PROCESSOR` | `batch` | `simple` exports synchronously (only useful for debugging) |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | propagation format used for incoming/outgoing HTTP and Messenger |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | `delta` is recommended for PHP-FPM (every request is a new short-lived meter provider) |
+
+### Redis instrumentation requires `ext-opentelemetry`
+
+Redis (`ext-redis`) and Predis are instrumented with the `hook()` API of the `opentelemetry` PHP extension.
+Hooks do not replace your Redis client objects, so services type-hinting `\Redis`, `\RedisCluster`,
+`\Predis\Client`, `RedisSessionHandler`, cache adapters, … keep working, and every Redis call is traced.
+Without the extension the Redis/Predis instrumentation is simply not enabled (unless enabled explicitly, which fails with a clear message).
+
 ## Minimal configuration
+
+No configuration is required: every instrumentation is enabled automatically when the package or PHP extension it
+needs is installed (`enabled: ~`, the default). Set `enabled: true` to require an instrumentation (the container fails
+to compile if its dependency is missing) or `enabled: false` to disable it.
 
 Create `config/packages/open_telemetry.yaml`:
 
@@ -101,7 +121,16 @@ danilovl_open_telemetry:
         version: '1.0.0'                    # maps to service.version OTEL resource attribute
         environment: '%kernel.environment%' # maps to deployment.environment.name OTEL resource attribute
 
+    privacy:
+        # values of these query parameters are replaced by "REDACTED" in url.full (case-insensitive);
+        # the default list covers tokens, API keys, passwords, OAuth codes and presigned URL signatures
+        sensitive_query_parameters: ['token', 'access_token', 'api_key', 'password', 'Signature', 'sig']
+        # replace literals of non-prepared SQL (Connection::query()/exec()) with "?" in db.query.text
+        sanitize_sql: true
+
     instrumentation:
+        # enabled: ~ (default) = auto-detect, true = required, false = disabled
+        # tracing.enabled: false + metering.enabled: true = metrics only (spans are not created)
         http_server:
             enabled: true
             default_trace_ignore_enabled: true  # enables DefaultHttpRequestTraceIgnore
@@ -211,22 +240,30 @@ The extension performs the following steps in order:
 ```
 OpenTelemetryExtension::load()
 │
-├── processConfiguration()          parse & validate open_telemetry.yaml
+├── processConfiguration()          parse & validate the danilovl_open_telemetry config
+│
+├── resolveEnabledFlags()
+│   └── enabled: ~ → true when the package / PHP extension is installed, false otherwise
+│       enabled: true with a missing dependency → LogicException
+│
+├── privacy parameters
+│   ├── danilovl.open_telemetry.privacy.sensitive_query_parameters
+│   └── danilovl.open_telemetry.privacy.sanitize_sql
 │
 ├── YamlFileLoader → services.yaml  register all base bundle services
 │
 ├── DefaultResourceInfoFactory      inject service.name / namespace / version / environment
-│   └── ResourceInfo definition     factory-backed: create() called at runtime
+│   └── danilovl.open_telemetry.resource_info   factory-backed: createResource() called at runtime
+│
+├── registerScopedInstrumentation()
+│   └── one ScopedInstrumentation per area (instrumentation scope name + tracing.enabled flag)
 │
 ├── registerInstrumentationServices()
 │   └── for each enabled instrumentation block (http_server, doctrine, redis …)
-│       ├── check PHP extension / class dependencies
-│       └── register instrumentation-specific services (subscribers, middleware, decorators)
-│
-├── registerCachedInstrumentation() wrap instrumentation with CachedInstrumentation if available
+│       └── register instrumentation-specific services (subscribers, middleware, decorators, hooks)
 │
 ├── setInstrumentationMetricsArgument() (×N)
-│   └── create lazy MetricsRecorder reference for each instrumentation
+│   └── default metrics service + interface alias, MetricsRecorder created lazily
 │
 ├── Provider registrations (factory-backed definitions)
 │   ├── TracerProviderInterface   → DefaultTracerProviderFactory::create()
@@ -254,8 +291,8 @@ After all extensions have loaded, Symfony runs compiler passes.
 OpenTelemetryCompilerPass::process()
 │
 ├── registerMessengerMiddleware()
-│   ├── inject MessageBusTracingMiddleware into messenger.bus.default (parameter-based)
-│   └── inject into every service tagged messenger.bus (IteratorArgument or array)
+│   ├── prepend MessageBusTracingMiddleware to messenger.bus.default.middleware (parameter)
+│   └── prepend it to every service tagged messenger.bus (IteratorArgument or array)
 │
 ├── registerHttpClientDecorator()
 │   └── clone HttpTracingMiddleware for each http_client.client tagged service
@@ -267,15 +304,7 @@ OpenTelemetryCompilerPass::process()
 ├── registerCacheDecorator()
 │   └── TracingCachePool decorates cache.app
 │
-├── registerRedisDecorator()
-│   └── scan all definitions → find services extending Redis
-│       └── clone TracingPhpRedis, setDecoratedService($id)
-│
-├── registerPRedisDecorator()
-│   └── scan all definitions → find services implementing Predis\ClientInterface
-│       └── clone TracingRedis, setDecoratedService($id)
-│
-├── overrideInterfaceAliasesByUserImplementations()  ← see Phase 2a below
+├── overrideInterfaceAliasesByUserImplementations()  ← see Phase 2.1 below
 │
 ├── registerTracerProviderProcessors()
 │   ├── collect services tagged otel.span_processor  → setArgument('$processors')
@@ -290,7 +319,7 @@ OpenTelemetryCompilerPass::process()
     └── collect services tagged otel.metric_reader   → setArgument('$readers')
 ```
 
-#### Phase 2.1 — Automatic interface alias override
+#### Phase 2.1 — Automatic metrics interface alias override
 
 For each instrumentation metrics interface the bundle registers a default alias:
 
@@ -300,6 +329,7 @@ Interface                        Default alias (bundle service)
 HttpServerMetricsInterface    →  danilovl.open_telemetry.metrics.http_server.default
 DoctrineMetricsInterface      →  danilovl.open_telemetry.metrics.doctrine.default
 RedisMetricsInterface         →  danilovl.open_telemetry.metrics.redis.default
+                                 danilovl.open_telemetry.metrics.predis.default (predis)
 CacheMetricsInterface         →  danilovl.open_telemetry.metrics.cache.default
 ConsoleMetricsInterface       →  danilovl.open_telemetry.metrics.console.default
 MessengerMetricsInterface     →  danilovl.open_telemetry.metrics.messenger.default
@@ -314,7 +344,7 @@ At compile time `overrideInterfaceAliasesByUserImplementations()` scans every co
 definition. If it finds exactly one user-defined service that implements an interface,
 it automatically re-points the alias to that service — no explicit YAML configuration needed.
 If more than one custom implementation is found, a `LogicException` is thrown asking the
-developer to declare the alias explicitly.
+developer to declare the alias explicitly. An alias the developer already changed is left untouched.
 
 ```
 User registers MyDoctrineMetrics implements DoctrineMetricsInterface
@@ -329,100 +359,81 @@ setAlias(DoctrineMetricsInterface, MyDoctrineMetrics)
 All instrumentation services now inject MyDoctrineMetrics automatically
 ```
 
-The same mechanism applies to the provider factories via aliases set in the extension:
-
-```yaml
-# No YAML needed — just implement the interface and register the service
-services:
-    App\Tracing\MyTracerProviderFactory:
-        # implements TracerProviderFactoryInterface
-        # CompilerPass detects it and overrides the TracerProviderFactoryInterface alias
-```
+This automatic override applies **only to the metrics interfaces** above. Provider factories are replaced
+differently — see [Replacing the provider factory](#replacing-the-provider-factory).
 
 #### Phase 2.2 — `TraceableHookCompilerPass`
 
-A second compiler pass registered in `OpenTelemetryBundle::build()` at `PassConfig::TYPE_BEFORE_REMOVING` priority.
-This ensures all Symfony autoconfiguration tags (`controller.service_arguments`, `routing.controller`) are already
-applied before the pass runs, making controller/command detection reliable.
+A second compiler pass registered in `OpenTelemetryBundle::build()` (default `PassConfig::TYPE_BEFORE_OPTIMIZATION`).
 
 It scans every container definition for classes that carry the `#[Traceable]` attribute
 (at class or method level) and builds a static hook map for `TraceableHookSubscriber`:
 
 ```
-TraceableHookCompilerPass::process()  [runs at TYPE_BEFORE_REMOVING — all DI tags are resolved]
+TraceableHookCompilerPass::process()
 │
 ├── iterate all container definitions
-│   ├── skip abstract / synthetic / placeholder definitions
-│   └── reflect each concrete class with #[Traceable] on class or any method
-│       ├── handler = CONTROLLER or COMMAND → skip (TraceableSubscriber handles it)
-│       └── handler = null (auto-detect):
-│           ├── is_a Command → skip
-│           ├── hasTag('controller.service_arguments') → skip
-│           ├── hasTag('routing.controller') → skip
-│           └── otherwise → register hook
+│   ├── skip abstract / synthetic definitions and classes that are unresolved (%param%) or do not exist
+│   └── reflect each class with #[Traceable] on the class or on any public method
+│       └── for every public method (constructor, destructor, abstract and magic methods
+│           except __invoke are skipped):
+│           ├── method-level #[Traceable] wins over class-level
+│           ├── handler = HOOK (default) → register hook
+│           └── handler = CONTROLLER or COMMAND → skip (TraceableSubscriber handles it)
 │
 ├── deduplicate hooks by key "ClassName::methodName"
-│   └── only one entry per method survives (method-level wins over class-level)
 │
 └── setArgument('$hooks', $hooks) → TraceableHookSubscriber
         └── subscriber wraps every listed method with a tracing span at runtime
 ```
 
-### Phase 3 — Runtime SDK initialization (`OpenTelemetryInitializer`)
+### Phase 3 — Runtime initialization
 
 The OpenTelemetry SDK is **not** initialized during container compilation.
-It is initialized lazily on the first handled event:
+It is initialized lazily on the first main request / console command, followed by the hook registration:
 
 ```
-HTTP request arrives
+HTTP request arrives (main request)          Console command (CLI)
+        │                                            │
+        ▼                                            ▼
+KernelEvents::REQUEST                        ConsoleEvents::COMMAND
         │
-        ▼
-KernelEvents::REQUEST (priority PHP_INT_MAX — runs first)
+        ├── PHP_INT_MAX  OpenTelemetryInitializer   (first, once per process)
+        │       └── OpenTelemetryFactory::initializeSdk()
+        │               ├── TracerProvider / MeterProvider / LoggerProvider
+        │               │     (built by the Default*ProviderFactory, with the ResourceInfo)
+        │               ├── PropagatorFactoryInterface::create()  → TextMapPropagator
+        │               │     (EnvPropagatorFactory: OTEL_PROPAGATORS)
+        │               └── register providers in OpenTelemetry Globals, auto-shutdown on exit
         │
-        ▼
-OpenTelemetryInitializer::onKernelRequest()
+        ├── 4096  RedisHookSubscriber        register phpredis / predis hooks (once per process)
+        ├── 2048  TraceableHookSubscriber    register #[Traceable] HOOK methods (once per process)
         │
-        ├── already initialized? → skip
-        │
-        └── OpenTelemetryFactory::initializeSdk()
-                ├── build ResourceInfo  (service.name, namespace, version, environment)
-                ├── TracerProviderFactory::create()   → SDK TracerProvider
-                ├── MeterProviderFactory::create()    → SDK MeterProvider
-                ├── LoggerProviderFactory::create()   → SDK LoggerProvider
-                ├── PropagatorFactory::create()       → TextMapPropagator
-                └── register providers in OpenTelemetry Globals
-                        └── all instrumentation services now emit telemetry
-
-Console command (CLI)
-        │
-        ▼
-ConsoleEvents::COMMAND (priority PHP_INT_MAX)
-        └── same OpenTelemetryInitializer::initialize() path
+        └── 64    HttpRequestTracingSubscriber  start the server span (HTTP only)
 ```
 
-### Phase 4 — SDK shutdown (`TracerShutdownSubscriber`)
+Hooks need the `opentelemetry` PHP extension. They cannot be removed, so every method is hooked once per process
+and the hook calls go to the services of the current container (no duplicate spans after a kernel reboot).
 
-After the HTTP response is sent or the console command finishes, the SDK must be
-flushed and shut down to ensure all buffered spans are exported before the process ends:
+### Phase 4 — Flush (`TelemetryFlushSubscriber`)
+
+At the end of every request / command the buffered telemetry is **flushed**, never shut down: in long-running
+runtimes (FrankenPHP worker mode, RoadRunner, Swoole, `messenger:consume`) the same providers serve many
+requests. The final shutdown happens on process exit through the SDK auto-shutdown handler.
 
 ```
-HTTP cycle ends
+KernelEvents::TERMINATE (main request) / ConsoleEvents::TERMINATE (priority -PHP_INT_MAX + 2 — runs last)
         │
         ▼
-KernelEvents::TERMINATE (priority -PHP_INT_MAX + 2 — runs last)
-        │
-        ▼
-TracerShutdownSubscriber::onTerminate()
-        └── Globals::tracerProvider() instanceof TracerProviderInterface?
-                └── yes → TracerProvider::shutdown()
-                        └── flushes BatchSpanProcessor, closes exporter connections
-
-Console command ends
-        │
-        ▼
-ConsoleEvents::TERMINATE (priority -PHP_INT_MAX + 2)
-        └── same TracerShutdownSubscriber::onTerminate() path
+TelemetryFlushSubscriber → TelemetryFlusher::flush()
+        ├── TracerProvider::forceFlush()
+        ├── MeterProvider::forceFlush()
+        └── LoggerProvider::forceFlush()
 ```
+
+With `instrumentation.messenger.long_running_command_enabled: true` (default) `MessengerFlushSubscriber` uses the same flusher
+after every message handled or failed by a long-running command (`messenger:consume` by default,
+extendable through `LongRunningCommandInterface`).
 
 ## Service configuration
 
@@ -441,22 +452,42 @@ The bundle creates `TracerProvider`, `MeterProvider`, and `LoggerProvider` using
 
 ### DefaultTracerProviderFactory
 
-Creates a `TracerProvider` with:
+Creates a `TracerProvider` from the environment (see [Environment variables](#environment-variables)):
 
-- `SpanExporterFactory` (reads `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`)
-- `BatchSpanProcessor` with `SystemClock`
-- `ParentBased(AlwaysOnSampler)` sampler
+- `OTEL_SDK_DISABLED=true` → `NoopTracerProvider`
+- sampler from `OTEL_TRACES_SAMPLER` (default `parentbased_always_on`)
+- default exporter from `OTEL_TRACES_EXPORTER` (`none` disables it) with the processor from `OTEL_PHP_TRACES_PROCESSOR` (default batch)
+- plus the processors / exporters registered in the container
 
 ### DefaultMeterProviderFactory
 
-Creates a `MeterProvider` with:
+Creates a `MeterProvider` with an `ExportingReader` for the exporter selected by `OTEL_METRICS_EXPORTER` (`none` disables it), plus registered exporters/readers.
 
-- `MetricExporterFactory` (reads `OTEL_EXPORTER_OTLP_ENDPOINT`)
-- `ExportingReader`
+### DefaultLoggerProviderFactory
+
+Creates a `LoggerProvider` with the exporter selected by `OTEL_LOGS_EXPORTER` and the processor from `OTEL_PHP_LOGS_PROCESSOR` (default **batch** — a synchronous export per log record would add an HTTP round-trip to every log call).
+
+### Propagation
+
+`EnvPropagatorFactory` (alias of `PropagatorFactoryInterface`) builds the propagator from `OTEL_PROPAGATORS`
+(default `tracecontext,baggage`). It is used to:
+
+- **extract** the incoming `traceparent` / `tracestate` / `baggage` headers of HTTP requests — the server span continues the caller's trace,
+- **inject** them into outgoing Symfony HttpClient requests,
+- carry the context through Messenger transports (`TraceContextStamp`) — the consumer span continues the producer's trace.
 
 ### Replacing the provider factory
 
-Implement `TracerProviderFactoryInterface` or `MeterProviderFactoryInterface` and register your class as a service. The container will use your implementation instead of the default.
+The providers are built by the services `DefaultTracerProviderFactory`, `DefaultMeterProviderFactory` and
+`DefaultLoggerProviderFactory` (referenced directly, not through the interfaces). Implementing
+`TracerProviderFactoryInterface` / `MeterProviderFactoryInterface` / `LoggerProviderFactoryInterface` alone is
+**not** picked up automatically: override the class of the default factory service in your `services.yaml`.
+
+```yaml
+services:
+    Danilovl\OpenTelemetryBundle\OpenTelemetry\Trace\DefaultTracerProviderFactory:
+        class: App\Tracing\MyTracerProviderFactory
+```
 
 ```php
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\TracerProviderFactoryInterface;
@@ -464,9 +495,10 @@ use OpenTelemetry\SDK\Trace\TracerProviderInterface;
 
 class MyTracerProviderFactory implements TracerProviderFactoryInterface
 {
-    public function create(iterable $processors = []): TracerProviderInterface
+    public function create(iterable $processors = [], iterable $exporters = []): TracerProviderInterface
     {
         // build and return your TracerProvider
+        // $processors / $exporters are the services tagged otel.span_processor / otel.span_exporter
     }
 }
 ```
@@ -485,7 +517,7 @@ The bundle allows you to easily register custom OpenTelemetry processors and exp
 
 #### Logging
 - `LogRecordProcessorInterface`: For custom log record processors. For convenience, you can extend `AbstractFilteringLogRecordProcessor`.
-- `LogRecordExporterInterface`: For custom log record exporters. Automatically wrapped in a `SimpleLogRecordProcessor`.
+- `LogRecordExporterInterface`: For custom log record exporters. Automatically wrapped in a `BatchLogRecordProcessor`.
 
 #### Metrics
 - `MetricExporterInterface`: For custom metric exporters. Automatically wrapped in an `ExportingReader`.
@@ -532,7 +564,9 @@ class MyService
 
 ### Component-specific instrumentation
 
-The bundle also provides specific `CachedInstrumentation` services for each component. You can inject them by their service IDs:
+The bundle also provides a `ScopedInstrumentation` service for each component (instrumentation scope name +
+the `tracing.enabled` flag of the component: when tracing is disabled its tracer is a no-op tracer that still
+propagates the parent context). You can inject them by their service IDs:
 
 - `danilovl.open_telemetry.instrumentation.async`
 - `danilovl.open_telemetry.instrumentation.cache`
@@ -544,6 +578,7 @@ The bundle also provides specific `CachedInstrumentation` services for each comp
 - `danilovl.open_telemetry.instrumentation.mailer`
 - `danilovl.open_telemetry.instrumentation.messenger`
 - `danilovl.open_telemetry.instrumentation.redis`
+- `danilovl.open_telemetry.instrumentation.predis`
 - `danilovl.open_telemetry.instrumentation.traceable`
 - `danilovl.open_telemetry.instrumentation.twig`
 
@@ -554,6 +589,10 @@ The bundle also provides specific `CachedInstrumentation` services for each comp
 ### What it does
 
 Listens to `KernelEvents::REQUEST`, `KernelEvents::EXCEPTION`, `KernelEvents::RESPONSE`, `KernelEvents::TERMINATE`. Creates one `SERVER` span per HTTP request.
+
+- The incoming trace context (`traceparent`, …) is extracted: the span is a child of the caller's span.
+- The span name is `{METHOD}` and becomes `{METHOD} {route template}` (e.g. `GET /users/{id}`) once the route is matched. The raw path is never used in the name (unbounded cardinality, may contain secrets).
+- Metrics are recorded once per request.
 
 ### Configuration
 
@@ -572,7 +611,7 @@ instrumentation:
 
 | Attribute | Source |
 |-----------|--------|
-| `url.full` | sanitized full URL |
+| `url.full` | full URL, credentials and sensitive query parameters redacted |
 | `http.request.method` | HTTP method |
 | `http.request.body.size` | `Content-Length` header |
 | `url.scheme` | request scheme |
@@ -581,10 +620,11 @@ instrumentation:
 | `server.address` | host |
 | `server.port` | port |
 | `network.protocol.version` | HTTP version (e.g. `1.1`) |
-| `network.peer.address` | client IP |
-| `client.address` | `REMOTE_HOST` |
-| `client.port` | `REMOTE_PORT` |
-| `http.route` | matched route name |
+| `client.address` | client IP (`Request::getClientIp()`, honours trusted proxies) |
+| `network.peer.address` | `REMOTE_ADDR` |
+| `network.peer.port` | `REMOTE_PORT` |
+| `http.route` | matched route template, e.g. `/users/{id}` |
+| `symfony.route.name` | matched route name |
 | `http.response.status_code` | response status |
 | `error.type` | exception class or status code on error |
 
@@ -670,7 +710,7 @@ class MyHttpServerMetrics implements HttpServerMetricsInterface
 | Class | Description |
 |-------|-------------|
 | `DefaultHttpRequestTraceIgnore` | Ignores requests to `/_wdt/` (Symfony web debug toolbar) |
-| `DefaultHttpServerMetrics` | Records `http.server.requests_total`, `http.server.duration_ms`, `http.server.memory_usage`, `http.server.errors_total` |
+| `DefaultHttpServerMetrics` | Records `http.server.request.duration` (histogram, seconds, semantic conventions), `http.server.requests_total`, `http.server.memory_usage`, `http.server.errors_total` with `http.request.method`, `http.response.status_code`, `http.route` (template), `error.type` |
 
 ---
 
@@ -678,7 +718,7 @@ class MyHttpServerMetrics implements HttpServerMetricsInterface
 
 ### What it does
 
-Decorates `HttpClientInterface` (priority 1000) using `AsyncDecoratorTrait`. Creates one `CLIENT` span per outgoing HTTP request. Injects trace context headers into the request automatically.
+Decorates `HttpClientInterface` (priority 1000) using `AsyncDecoratorTrait`. Creates one `CLIENT` span per outgoing HTTP request, named `{METHOD}` (semantic conventions; use an `HttpClientSpanNameHandlerInterface` to customise). Injects trace context headers into the request automatically. Transport errors (timeouts, DNS, connection refused) end the span with an error status.
 
 ### Configuration
 
@@ -697,7 +737,7 @@ instrumentation:
 | Attribute | Source |
 |-----------|--------|
 | `http.request.method` | HTTP method |
-| `url.full` | request URL |
+| `url.full` | request URL, credentials and sensitive query parameters redacted |
 | `server.address` | hostname from URL |
 | `server.port` | port (or 80/443 by scheme) |
 | `http.response.status_code` | response status |
@@ -768,7 +808,7 @@ interface HttpClientMetricsInterface
 
 | Class | Description |
 |-------|-------------|
-| `DefaultHttpClientMetrics` | Records `http.client.requests_total`, `http.client.duration_ms`, `http.client.memory_usage`, `http.client.errors_total` |
+| `DefaultHttpClientMetrics` | Records `http.client.request.duration` (histogram, seconds, semantic conventions), `http.client.requests_total`, `http.client.memory_usage`, `http.client.errors_total` with `http.request.method`, `server.address`, `http.response.status_code`, `error.type` |
 
 ---
 
@@ -798,7 +838,8 @@ instrumentation:
 |-----------|--------|
 | `db.system.name` | database system (e.g. `mysql`, `postgresql`) |
 | `db.operation.name` | SQL operation (e.g. `SELECT`, `INSERT`, `BEGIN`, `COMMIT`) |
-| `db.query.text` | full SQL query |
+| `db.query.text` | SQL query; literals of non-prepared queries are replaced by `?` (`privacy.sanitize_sql`) |
+| `db.namespace`, `server.address`, `server.port` | connection parameters (the user name and password are never recorded) |
 | `error.type` | exception class on error |
 
 ### Interfaces
@@ -861,9 +902,11 @@ interface DoctrineMetricsInterface
 
 ### What it does
 
-Automatically decorates all services implementing native PHP `Redis` class. Creates one `CLIENT` span per Redis command.
+Hooks the methods of `\Redis` and `\RedisCluster` (ext-redis) with the `ext-opentelemetry` hook API. Creates one `CLIENT` span per Redis command, wherever the client is used (your services, `RedisSessionHandler`, cache adapters, Messenger Redis transport). Your Redis services are not decorated, so their type does not change.
 
-Traced commands: `GET`, `SET`, `SETEX`, `DEL`, `UNLINK`, `EXPIRE`, and any `__call` passthrough.
+Traced commands: strings, keys, hashes, lists, sets, sorted sets, streams, scripting and transactions (see `PhpRedisHookInstrumentation::COMMANDS`). Arguments of `AUTH`, `EVAL`, `HELLO`, … are never recorded.
+
+Requires `ext-redis` and `ext-opentelemetry`.
 
 ### Configuration
 
@@ -883,7 +926,8 @@ instrumentation:
 |-----------|--------|
 | `db.system.name` | `redis` |
 | `db.operation.name` | command name (e.g. `GET`, `SET`) |
-| `db.redis.key` | cache key |
+| `db.redis.key` | first key of the command |
+| `db.redis.client` | `phpredis` |
 | `error.type` | exception class on error |
 
 ### Interfaces
@@ -959,9 +1003,9 @@ interface RedisMetricsInterface
 
 ### What it does
 
-Automatically decorates all services implementing `Predis\ClientInterface`. Creates one `CLIENT` span per Redis command.
+Hooks `Predis\ClientInterface::executeCommand()` with the `ext-opentelemetry` hook API, which every command (including magic methods) goes through. Creates one `CLIENT` span per Redis command. Clients are not decorated, so `Predis\Client` type hints keep working.
 
-Traced commands: `GET`, `SET`, `SETEX`, `DEL`, `UNLINK`, `EXPIRE`, and any `__call` passthrough.
+Requires `predis/predis` and `ext-opentelemetry`. Redis and Predis have independent `metering` flags.
 
 ### Configuration
 
@@ -979,9 +1023,10 @@ instrumentation:
 
 | Attribute | Source |
 |-----------|--------|
-| `db.system.name` | `predis` |
+| `db.system.name` | `redis` |
 | `db.operation.name` | command name (e.g. `GET`, `SET`) |
-| `db.redis.key` | cache key |
+| `db.redis.key` | first key of the command |
+| `db.redis.client` | `predis` |
 | `error.type` | exception class on error |
 
 ### Interfaces
@@ -1049,7 +1094,7 @@ interface RedisMetricsInterface
 
 | Class | Description |
 |-------|-------------|
-| `DefaultRedisMetrics` | Records `redis.client.requests_total`, `redis.client.duration_ms`, `redis.client.memory_usage`, `redis.client.errors_total`; `db.system` attribute is set to `predis` |
+| `DefaultRedisMetrics` | Records `redis.client.requests_total`, `redis.client.duration_ms`, `redis.client.memory_usage`, `redis.client.errors_total`; `db.system` attribute is set to `redis` |
 
 ---
 
@@ -1057,7 +1102,7 @@ interface RedisMetricsInterface
 
 ### What it does
 
-Decorates `cache.app` (`AdapterInterface`). Creates one `INTERNAL` span per `getItem()` call. Metering is enabled by default.
+Decorates `cache.app`. The decorator implements the same interfaces as Symfony pools (`CacheInterface`, `AdapterInterface` / PSR-6, `NamespacedPoolInterface`, `PruneableInterface`, `ResettableInterface`), so every way of injecting `cache.app` keeps working. Creates one `INTERNAL` span per cache operation (`get`, `getItem(s)`, `hasItem`, `save`, `delete*`, `clear`, `commit`). Metering is enabled by default; the cache key is not a metric attribute (unbounded cardinality).
 
 ### Configuration
 
@@ -1075,9 +1120,11 @@ instrumentation:
 
 | Attribute | Source |
 |-----------|--------|
-| `cache.system` | `cache` |
+| `cache.system` | `symfony` |
+| `cache.pool` | `cache.app` |
+| `cache.operation` | `get`, `get_multiple`, `has`, `save`, `delete`, `delete_multiple`, `clear`, `commit` |
 | `cache.key` | cache item key |
-| `cache.hit` | `true` / `false` |
+| `cache.hit` | `true` / `false` (get operations) |
 | `error.type` | exception class on error |
 
 ### Interfaces
@@ -1359,6 +1406,8 @@ Registers a Messenger middleware (`messenger_tracing`). Creates one span per mes
 - `CONSUMER` span when the message is consumed (has `ReceivedStamp`)
 
 Automatically detects RabbitMQ/AMQP transport from stamps.
+
+The producer adds a `TraceContextStamp` with the propagation headers to the envelope; the consumer span (in the worker) continues the producer's trace. The stamp contains only scalar data and works with every serializer. Re-dispatched messages (retries, failure transport) keep their original stamp.
 
 When `long_running_command_enabled: true`, `MessengerFlushSubscriber` forces `forceFlush()` on all providers after each message is processed in `messenger:consume`.
 
@@ -1915,7 +1964,7 @@ You can inject `MetricsRecorderInterface` into your own services to record custo
 | `events` | `event.dispatch.duration_ms` | histogram | same |
 | `events` | `event.dispatch.memory_usage` | gauge | same |
 | `events` | `event.dispatch.errors_total` | counter | `event.class`, `event.name`, `error.type` |
-| `messenger` | `messenger.message.requests_total` | counter | `messaging.message.type`, `messaging.operation`, `messaging.system`, `messaging.destination.name` |
+| `messenger` | `messenger.message.requests_total` | counter | `messaging.message.type`, `messaging.operation.name`, `messaging.system`, `messaging.destination.name` |
 | `messenger` | `messenger.message.duration_ms` | histogram | same |
 | `messenger` | `messenger.message.memory_usage` | gauge | same |
 | `messenger` | `messenger.message.errors_total` | counter | same + `error.type` |
@@ -1965,3 +2014,25 @@ services:
 ```
 
 The bundle will detect it and use it instead of `DefaultHttpServerMetrics`.
+
+## Planned changes
+
+### Switch `messaging.system` to `messaging.system.name`
+
+Semantic conventions 1.44 renamed the messaging attribute `messaging.system` to `messaging.system.name`.
+The bundle supports `open-telemetry/sem-conv` `^1.38`, and no constant exists in both ranges
+(`MessagingIncubatingAttributes::MESSAGING_SYSTEM` is only in < 1.44, `MESSAGING_SYSTEM_NAME` only in >= 1.44).
+So `MessageBusTracingMiddleware::ATTRIBUTE_MESSAGING_SYSTEM` currently uses the literal `messaging.system`.
+
+When the new name is wanted:
+
+1. Raise the requirement in `composer.json` to `"open-telemetry/sem-conv": "^1.44"`.
+2. In `MessageBusTracingMiddleware` replace `self::ATTRIBUTE_MESSAGING_SYSTEM` with
+   `MessagingIncubatingAttributes::MESSAGING_SYSTEM_NAME` and remove the literal constant.
+3. Update the span attribute and the `messenger` metrics tables in this README, and the tests that assert `messaging.system`.
+4. Mention the breaking change in the release notes: dashboards and queries filtering on `messaging.system`
+   must use `messaging.system.name`, and applications must update `open-telemetry/sem-conv` to 1.44+.
+
+## License
+
+The OpenTelemetryBundle is open-sourced software licensed under the [MIT license](LICENSE).

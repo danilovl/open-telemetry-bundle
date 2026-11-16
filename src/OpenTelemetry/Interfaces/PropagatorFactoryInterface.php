@@ -8,7 +8,7 @@ use OpenTelemetry\Context\Propagation\TextMapPropagatorInterface;
  * Factory for creating a TextMapPropagator used for distributed trace context propagation.
  *
  * Implement this interface to supply a custom propagator (e.g. B3, Jaeger, or a composite one)
- * instead of the default W3C TraceContext propagator.
+ * instead of the default one built from OTEL_PROPAGATORS (tracecontext,baggage).
  * The bundle calls {@see create()} once and registers the result as the global propagator
  * via {@see \OpenTelemetry\API\Globals::registerInitializer()}.
  */

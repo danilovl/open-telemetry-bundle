@@ -26,6 +26,44 @@ class SqlHelperTest extends TestCase
         $this->assertSame('db.sql', SqlHelper::buildSpanName('   '));
     }
 
+    #[DataProvider('provideSanitizeCases')]
+    public function testSanitize(string $sql, string $expected): void
+    {
+        $this->assertSame($expected, SqlHelper::sanitize($sql));
+    }
+
+    public function testDoubleQuotedStringsMysql(): void
+    {
+        $this->assertSame(
+            'SELECT * FROM `users` WHERE email = ? AND name = ? AND token = ?',
+            SqlHelper::sanitize('SELECT * FROM `users` WHERE email = "john@example.com" AND name = "say ""hi""" AND token = \'secret\'', true)
+        );
+    }
+
+    public function testDoubleQuotedIdentifiersKept(): void
+    {
+        $this->assertSame(
+            'SELECT "id" FROM "users" WHERE "email" = ?',
+            SqlHelper::sanitize('SELECT "id" FROM "users" WHERE "email" = \'john@example.com\'')
+        );
+    }
+
+    public static function provideSanitizeCases(): Generator
+    {
+        yield 'string literal' => ["SELECT * FROM users WHERE email = 'john@example.com'", 'SELECT * FROM users WHERE email = ?'];
+        yield 'escaped quotes' => ["SELECT 1 FROM t WHERE n = 'O''Brien' OR m = 'a\\'b'", 'SELECT ? FROM t WHERE n = ? OR m = ?'];
+        yield 'numbers' => ['SELECT * FROM t WHERE id = 42 AND price > 9.99 AND x = -1 AND e = 1e10', 'SELECT * FROM t WHERE id = ? AND price > ? AND x = ? AND e = ?'];
+        yield 'in list' => ['DELETE FROM t WHERE id IN (1, 2, 3)', 'DELETE FROM t WHERE id IN (?, ?, ?)'];
+        yield 'identifiers with digits untouched' => ['SELECT t1.col2 FROM table3 t1', 'SELECT t1.col2 FROM table3 t1'];
+        yield 'placeholders untouched' => ['SELECT * FROM t WHERE a = ? AND b = :p1 AND c = $1 AND d = ?2', 'SELECT * FROM t WHERE a = ? AND b = :p1 AND c = $1 AND d = ?2'];
+        yield 'hex literal' => ['INSERT INTO t VALUES (0xDEADBEEF)', 'INSERT INTO t VALUES (?)'];
+        yield 'postgres dollar quoted' => ['SELECT $$secret text$$, $tag$more$tag$', 'SELECT ?, ?'];
+        yield 'national string' => ["SELECT N'unicode'", 'SELECT ?'];
+        yield 'multiline string' => ["UPDATE t SET body = 'line1\nline2' WHERE id = 5", 'UPDATE t SET body = ? WHERE id = ?'];
+        yield 'quoted identifiers kept' => ['SELECT "col1", `col2` FROM "Table9"', 'SELECT "col1", `col2` FROM "Table9"'];
+        yield 'no literals' => ['SELECT * FROM users', 'SELECT * FROM users'];
+    }
+
     public static function provideSimplifySqlCases(): Generator
     {
         yield 'select' => ['SELECT id, name FROM users WHERE id = 1', 'select from users'];

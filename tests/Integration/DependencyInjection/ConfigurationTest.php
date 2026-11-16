@@ -79,7 +79,7 @@ class ConfigurationTest extends TestCase
         /** @var array<string, mixed> $tracing */
         $tracing = $item['tracing'];
 
-        $this->assertTrue($item['enabled']);
+        $this->assertNull($item['enabled']);
         $this->assertTrue($tracing['enabled']);
     }
 

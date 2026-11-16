@@ -11,7 +11,7 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\Interfa
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\SpanAttributeEnricher;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     Span,
     SpanKind,
@@ -27,6 +27,8 @@ use Symfony\Component\EventDispatcher\{
     EventDispatcherInterface,
     EventSubscriberInterface
 };
+use Symfony\Component\Console\Event\ConsoleTerminateEvent;
+use Symfony\Component\HttpKernel\Event\TerminateEvent;
 use Throwable;
 
 #[AsDecorator(decorates: 'event_dispatcher')]
@@ -44,7 +46,7 @@ final readonly class TracingEventDispatcher implements EventDispatcherInterface
     public function __construct(
         #[AutowireDecorated]
         private EventDispatcherInterface $inner,
-        private CachedInstrumentation $instrumentation,
+        private ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::EVENT_ATTRIBUTE_PROVIDER)]
         private iterable $eventAttributeProviders = [],
         #[AutowireIterator(InstrumentationTags::EVENT_SPAN_NAME_HANDLER)]
@@ -76,7 +78,8 @@ final readonly class TracingEventDispatcher implements EventDispatcherInterface
         $parentContext = Context::getCurrent();
         $parentSpan = Span::fromContext($parentContext);
 
-        if (!$parentSpan->getContext()->isValid()) {
+        // the request/command span ends inside terminate, a child span would outlive it and miss the flush
+        if (!$parentSpan->getContext()->isValid() || $event instanceof TerminateEvent || $event instanceof ConsoleTerminateEvent) {
             return $this->inner->dispatch($event, $eventName);
         }
 

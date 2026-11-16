@@ -6,6 +6,7 @@ use Symfony\Component\Config\Definition\Builder\{
     TreeBuilder,
     ArrayNodeDefinition
 };
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\UrlHelper;
 use Symfony\Component\Config\Definition\ConfigurationInterface;
 
 final class Configuration implements ConfigurationInterface
@@ -27,6 +28,22 @@ final class Configuration implements ConfigurationInterface
                         ->scalarNode('name')->defaultNull()->end()
                         ->scalarNode('version')->defaultNull()->end()
                         ->scalarNode('environment')->defaultNull()->end()
+                ->end()
+            ->end();
+
+        $rootChildren
+            ->arrayNode('privacy')
+                ->addDefaultsIfNotSet()
+                ->children()
+                    ->arrayNode('sensitive_query_parameters')
+                        ->info('Query parameters whose values are replaced by "REDACTED" in url.full (case-insensitive).')
+                        ->scalarPrototype()->end()
+                        ->defaultValue(UrlHelper::DEFAULT_SENSITIVE_QUERY_PARAMETERS)
+                    ->end()
+                    ->booleanNode('sanitize_sql')
+                        ->info('Replace literals in non-prepared SQL (db.query.text) with "?".')
+                        ->defaultTrue()
+                    ->end()
                 ->end()
             ->end();
 
@@ -124,7 +141,10 @@ final class Configuration implements ConfigurationInterface
 
         $node
             ->children()
-            ->booleanNode('enabled')->defaultTrue()->end();
+            ->booleanNode('enabled')
+                ->info('null (default) = enabled automatically when the required package/extension is available.')
+                ->defaultNull()
+            ->end();
 
         if ($withDefaultTraceIgnore) {
             $node

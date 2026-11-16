@@ -9,10 +9,21 @@ interface MessengerMetricsInterface
     /**
      * @param array<string, mixed> $messagingAttributes
      */
-    public function recordMessage(object $message, string $operation, array $messagingAttributes, float $durationMs): void;
+    public function recordMessage(
+        object $message,
+        string $operation,
+        array $messagingAttributes,
+        float $durationMs,
+    ): void;
 
     /**
      * @param array<string, mixed> $messagingAttributes
      */
-    public function recordError(object $message, string $operation, array $messagingAttributes, Throwable $exception, float $durationMs): void;
+    public function recordError(
+        object $message,
+        string $operation,
+        array $messagingAttributes,
+        Throwable $exception,
+        float $durationMs,
+    ): void;
 }

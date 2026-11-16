@@ -10,20 +10,25 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Twig\Interfaces\{
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\SpanAttributeEnricher;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
-    SpanKind
+    SpanKind,
+    StatusCode
 };
-use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\{
+    Context,
+    ContextInterface
+};
 use SplObjectStorage;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
+use Symfony\Contracts\Service\ResetInterface;
 use Twig\Extension\AbstractExtension;
 use Twig\NodeVisitor\NodeVisitorInterface;
 use Twig\Profiler\NodeVisitor\ProfilerNodeVisitor;
 use Twig\Profiler\Profile;
 
-final class TraceableTwigExtension extends AbstractExtension
+final class TraceableTwigExtension extends AbstractExtension implements ResetInterface
 {
     public const string INSTRUMENTATION_NAME = 'danilovl.twig';
 
@@ -39,12 +44,19 @@ final class TraceableTwigExtension extends AbstractExtension
     private SplObjectStorage $spans;
 
     /**
+     * Innermost last.
+     *
+     * @var list<Profile>
+     */
+    private array $openProfiles = [];
+
+    /**
      * @param iterable<TwigAttributeProviderInterface> $attributeProviders
      * @param iterable<TwigSpanNameHandlerInterface> $twigSpanNameHandlers
      * @param iterable<TwigTraceIgnoreInterface> $twigTraceIgnores
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::TWIG_ATTRIBUTE_PROVIDER)]
         private readonly iterable $attributeProviders = [],
         #[AutowireIterator(InstrumentationTags::TWIG_SPAN_NAME_HANDLER)]
@@ -75,7 +87,6 @@ final class TraceableTwigExtension extends AbstractExtension
 
     public function enter(Profile $profile): void
     {
-        $scope = Context::storage()->scope();
 
         $spanName = sprintf('twig %s', $this->getSpanName($profile));
 
@@ -100,7 +111,7 @@ final class TraceableTwigExtension extends AbstractExtension
             ->setSpanKind(SpanKind::KIND_INTERNAL)
             ->setAttribute('transaction.type', 'template')
             ->setAttribute('twig.system', 'twig')
-            ->setParent($scope?->context());
+            ->setParent($this->resolveParentContext());
 
         $span = $spanBuilder->startSpan();
 
@@ -111,6 +122,7 @@ final class TraceableTwigExtension extends AbstractExtension
         );
 
         $this->spans[$profile] = $span;
+        $this->openProfiles[] = $profile;
     }
 
     public function leave(Profile $profile): void
@@ -119,11 +131,56 @@ final class TraceableTwigExtension extends AbstractExtension
             return;
         }
 
-        /** @var SpanInterface $span */
-        $span = $this->spans[$profile];
-        $span->end();
+        // inner profiles not left because of an exception
+        while ($this->openProfiles !== []) {
+            $openProfile = array_pop($this->openProfiles);
+            /** @var SpanInterface $span */
+            $span = $this->spans[$openProfile];
+            unset($this->spans[$openProfile]);
 
-        unset($this->spans[$profile]);
+            if ($openProfile === $profile) {
+                $span->end();
+
+                return;
+            }
+
+            $span->setStatus(StatusCode::STATUS_ERROR, 'Rendering aborted');
+            $span->end();
+        }
+    }
+
+    /** Twig does not call leave() when rendering throws. */
+    public function reset(): void
+    {
+        while ($this->openProfiles !== []) {
+            $openProfile = array_pop($this->openProfiles);
+            /** @var SpanInterface $span */
+            $span = $this->spans[$openProfile];
+            unset($this->spans[$openProfile]);
+
+            $span->setStatus(StatusCode::STATUS_ERROR, 'Rendering aborted');
+            $span->end();
+        }
+    }
+
+    public function getOpenSpanCount(): int
+    {
+        return count($this->openProfiles);
+    }
+
+    private function resolveParentContext(): ContextInterface
+    {
+        $current = Context::getCurrent();
+        $parentProfile = $this->openProfiles[array_key_last($this->openProfiles) ?? -1] ?? null;
+
+        if ($parentProfile === null || !isset($this->spans[$parentProfile])) {
+            return $current;
+        }
+
+        /** @var SpanInterface $parentSpan */
+        $parentSpan = $this->spans[$parentProfile];
+
+        return $parentSpan->storeInContext($current);
     }
 
     /**

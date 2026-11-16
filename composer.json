@@ -36,7 +36,10 @@
         "predis/predis": "^3.4",
         "ext-redis": "*",
         "doctrine/orm": "^3.4.4",
-        "twig/twig": "^3.23"
+        "twig/twig": "^3.23",
+        "symfony/serializer": "^8.0",
+        "symfony/property-info": "^8.0",
+        "symfony/property-access": "^8.0"
     },
     "suggest": {
         "symfony/framework-bundle": "For full Symfony integration",

@@ -15,5 +15,11 @@ interface HttpClientMetricsInterface
     /**
      * @param array<string, mixed> $options
      */
-    public function recordError(string $method, string $url, array $options, Throwable $exception, float $durationMs): void;
+    public function recordError(
+        string $method,
+        string $url,
+        array $options,
+        Throwable $exception,
+        float $durationMs,
+    ): void;
 }

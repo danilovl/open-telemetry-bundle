@@ -2,27 +2,13 @@
 
 namespace Danilovl\OpenTelemetryBundle\DependencyInjection;
 
-use Danilovl\OpenTelemetryBundle\Instrumentation\Async\Interfaces\AsyncMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\Interfaces\DoctrineMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\Interfaces\RedisMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\Interfaces\CacheMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\Interfaces\ConsoleMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\Interfaces\EventDispatcherMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpClient\Interfaces\HttpClientMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpKernel\Interfaces\HttpServerMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Mailer\Interfaces\MailerMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Interfaces\MessengerMetricsInterface;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\Interfaces\TraceableMetricsInterface;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpClient\HttpTracingMiddleware;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\TracingEventDispatcher;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
 use ReflectionException;
 use ReflectionMethod;
 use ReflectionNamedType;
-use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
-    TracingRedis,
-    TracingPhpRedis
-};
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\MessageBusTracingMiddleware;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use OpenTelemetry\SDK\Logs\LoggerProviderInterface;
@@ -48,8 +34,6 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
         $this->registerHttpClientDecorator($container);
         $this->registerEventDispatcherDecorator($container);
         $this->registerCacheDecorator($container);
-        $this->registerRedisDecorator($container);
-        $this->registerPRedisDecorator($container);
         $this->overrideInterfaceAliasesByUserImplementations($container);
         $this->registerTracerProviderProcessors($container);
         $this->registerLoggerProviderProcessors($container);
@@ -253,139 +237,8 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
 
         $container
             ->getDefinition($id)
-            ->setDecoratedService('cache.app');
-    }
-
-    private function registerRedisDecorator(ContainerBuilder $container): void
-    {
-        if (!$container->hasDefinition(TracingPhpRedis::class)) {
-            return;
-        }
-
-        // Scan all container definitions to find services whose resolved class extends the native Redis extension class.
-        // We skip our own bundle services and abstract definitions to avoid infinite decoration loops.
-        // For each matching service we clone the TracingPhpRedis template definition and register it as a decorator,
-        // injecting the original service as '$redis' via the '.inner' alias that Symfony creates automatically.
-        $registered = false;
-        foreach ($container->getDefinitions() as $serviceId => $definition) {
-            if (
-                $definition->isAbstract() ||
-                str_starts_with($serviceId, 'danilovl.open_telemetry') ||
-                str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
-            ) {
-                continue;
-            }
-
-            $class = $this->resolveDefinitionClass($container, $serviceId);
-            if ($class === null) {
-                continue;
-            }
-
-            if (!is_a($class, 'Redis', true)) {
-                continue;
-            }
-
-            $decoratorId = $serviceId . '.otel_tracing';
-            $container
-                ->setDefinition($decoratorId, clone $container->getDefinition(TracingPhpRedis::class))
-                ->setDecoratedService($serviceId)
-                ->setArgument('$redis', new Reference($decoratorId . '.inner'));
-
-            // Only the first found Redis service becomes the "default" alias,
-            // so type-hinted injections of Redis resolve to a traced instance.
-            if (!$registered) {
-                $this->registerDefaultRedisAlias($container, 'Redis', $decoratorId);
-                $registered = true;
-            }
-        }
-
-        // If no native Redis services were found but Predis services exist,
-        // throw a descriptive error to guide the developer to use the correct instrumentation type.
-        if (!$registered) {
-            $predisCount = 0;
-            foreach ($container->getDefinitions() as $serviceId => $definition) {
-                if (
-                    $definition->isAbstract() ||
-                    str_starts_with($serviceId, 'danilovl.open_telemetry') ||
-                    str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
-                ) {
-                    continue;
-                }
-
-                $class = $this->resolveDefinitionClass($container, $serviceId);
-                if ($class !== null && is_a($class, 'Predis\ClientInterface', true)) {
-                    $predisCount++;
-                }
-            }
-
-            if ($predisCount > 0) {
-                $message = sprintf(
-                    'Redis instrumentation is enabled but no such services were found. However, %d services of type "predis" were found.',
-                    $predisCount
-                );
-
-                throw new LogicException($message);
-            }
-
-            throw new LogicException('Redis instrumentation is enabled but no Redis services were found in the container.');
-        }
-    }
-
-    private function registerPRedisDecorator(ContainerBuilder $container): void
-    {
-        if (!$container->hasDefinition(TracingRedis::class)) {
-            return;
-        }
-
-        $registered = false;
-        foreach ($container->getDefinitions() as $serviceId => $definition) {
-            if (
-                $definition->isAbstract() ||
-                str_starts_with($serviceId, 'danilovl.open_telemetry') ||
-                str_starts_with($serviceId, 'Danilovl\OpenTelemetryBundle')
-            ) {
-                continue;
-            }
-
-            $class = $this->resolveDefinitionClass($container, $serviceId);
-            if ($class === null) {
-                continue;
-            }
-
-            if (!is_a($class, 'Predis\ClientInterface', true)) {
-                continue;
-            }
-
-            $decoratorId = $serviceId . '.otel_tracing';
-            $cloneTracingRedis = clone $container->getDefinition(TracingRedis::class);
-
-            $container
-                ->setDefinition($decoratorId, $cloneTracingRedis)
-                ->setDecoratedService($serviceId)
-                ->setArgument('$redis', new Reference($decoratorId . '.inner'));
-
-            if (!$registered) {
-                $this->registerDefaultRedisAlias($container, 'Predis\ClientInterface', $decoratorId);
-                $registered = true;
-            }
-        }
-    }
-
-    private function registerDefaultRedisAlias(
-        ContainerBuilder $container,
-        string $targetClass,
-        string $decoratorId
-    ): void {
-        $aliasId = 'danilovl.open_telemetry.instrumentation.redis.default';
-        $container
-            ->setAlias($aliasId, $decoratorId)
-            ->setPublic(true);
-
-        if (!$container->hasAlias($targetClass) && !$container->hasDefinition($targetClass)) {
-            $container
-                ->setAlias($targetClass, $decoratorId)
-                ->setPublic(true);
-        }
+            ->setDecoratedService('cache.app')
+            ->setArgument('$inner', new Reference($id . '.inner'));
     }
 
     /**
@@ -473,79 +326,113 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
      */
     private function overrideInterfaceAliasesByUserImplementations(ContainerBuilder $container): void
     {
-        foreach ($this->getInterfaceDefaultServiceMap() as $interface => $defaultServiceId) {
-            if (!$container->hasAlias($interface)) {
+        foreach ($this->getInterfaceDefaultServiceMap() as $interface => $defaultServiceIds) {
+            $defaultServiceIds = array_values(array_filter(
+                $defaultServiceIds,
+                static fn (string $id): bool => $container->hasDefinition($id)
+            ));
+
+            if ($defaultServiceIds === [] || !$container->hasAlias($interface)) {
                 continue;
             }
 
             $currentAlias = (string) $container->getAlias($interface);
 
-            // Only proceed if the alias still points to the bundle default.
-            // If the developer already set a custom alias, we must not override it.
-            if ($currentAlias !== $defaultServiceId) {
-                continue;
-            }
+            if (in_array($currentAlias, $defaultServiceIds, true)) {
+                $defaultClasses = array_values(array_filter(array_map(
+                    fn (string $id): ?string => $this->resolveDefinitionClass($container, $id),
+                    $defaultServiceIds
+                )));
 
-            $defaultClass = $this->resolveDefinitionClass($container, $defaultServiceId);
-
-            $serviceIds = $this->findCustomImplementations(
-                container: $container,
-                interface: $interface,
-                defaultServiceId: $defaultServiceId,
-                defaultClass: $defaultClass,
-            );
-
-            if ($serviceIds === []) {
-                continue;
-            }
-
-            if (count($serviceIds) > 1) {
-                $message = sprintf(
-                    'Multiple services implement "%s" (%s). Please configure explicit alias for the interface.',
-                    $interface,
-                    implode(', ', $serviceIds)
+                $serviceIds = $this->findCustomImplementations(
+                    container: $container,
+                    interface: $interface,
+                    defaultServiceIds: $defaultServiceIds,
+                    defaultClasses: $defaultClasses,
                 );
 
-                throw new LogicException($message);
+                if ($serviceIds === []) {
+                    continue;
+                }
+
+                if (count($serviceIds) > 1) {
+                    $message = sprintf(
+                        'Multiple services implement "%s" (%s). Please configure explicit alias for the interface.',
+                        $interface,
+                        implode(', ', $serviceIds)
+                    );
+
+                    throw new LogicException($message);
+                }
+
+                $container->setAlias($interface, $serviceIds[0])->setPublic(false);
             }
 
-            $container->setAlias($interface, $serviceIds[0])->setPublic(false);
+            // services referencing a default directly (predis) must use the custom implementation too
+            $this->replaceDefaultMetricsReferences($container, $interface, $defaultServiceIds);
         }
     }
 
     /**
-     * @return array<string, string>
+     * @param list<string> $defaultServiceIds
      */
-    private function getInterfaceDefaultServiceMap(): array
-    {
-        return [
-            HttpServerMetricsInterface::class => 'danilovl.open_telemetry.metrics.http_server.default',
-            MessengerMetricsInterface::class => 'danilovl.open_telemetry.metrics.messenger.default',
-            AsyncMetricsInterface::class => 'danilovl.open_telemetry.metrics.async.default',
-            HttpClientMetricsInterface::class => 'danilovl.open_telemetry.metrics.http_client.default',
-            RedisMetricsInterface::class => 'danilovl.open_telemetry.metrics.redis.default',
-            CacheMetricsInterface::class => 'danilovl.open_telemetry.metrics.cache.default',
-            ConsoleMetricsInterface::class => 'danilovl.open_telemetry.metrics.console.default',
-            MailerMetricsInterface::class => 'danilovl.open_telemetry.metrics.mailer.default',
-            EventDispatcherMetricsInterface::class => 'danilovl.open_telemetry.metrics.events.default',
-            TraceableMetricsInterface::class => 'danilovl.open_telemetry.metrics.traceable.default',
-            DoctrineMetricsInterface::class => 'danilovl.open_telemetry.metrics.doctrine.default',
-        ];
+    private function replaceDefaultMetricsReferences(
+        ContainerBuilder $container,
+        string $interface,
+        array $defaultServiceIds,
+    ): void {
+        foreach (OpenTelemetryExtension::getInstrumentationMetricsConfigurations() as $metricsConfiguration) {
+            if ($metricsConfiguration['metricsInterface'] !== $interface) {
+                continue;
+            }
+
+            $serviceId = $metricsConfiguration['serviceId'];
+            if (!$container->hasDefinition($serviceId)) {
+                continue;
+            }
+
+            $definition = $container->getDefinition($serviceId);
+            $arguments = $definition->getArguments();
+            $argumentName = $metricsConfiguration['argumentName'];
+            $argument = $arguments[$argumentName] ?? null;
+
+            if ($argument instanceof Reference && in_array((string) $argument, $defaultServiceIds, true)) {
+                $definition->setArgument($argumentName, new Reference($interface));
+            }
+        }
     }
 
     /**
+     * @return array<string, list<string>>
+     */
+    private function getInterfaceDefaultServiceMap(): array
+    {
+        $map = [];
+
+        foreach (OpenTelemetryExtension::getInstrumentationMetricsConfigurations() as $metricsConfiguration) {
+            $map[$metricsConfiguration['metricsInterface']][] = OpenTelemetryExtension::defaultMetricsServiceId(
+                $metricsConfiguration['instrumentationKey']
+            );
+        }
+
+        return array_map(static fn (array $ids): array => array_values(array_unique($ids)), $map);
+    }
+
+    /**
+     * @param list<string> $defaultServiceIds
+     * @param list<string> $defaultClasses
      * @return array<int, string>
      */
     private function findCustomImplementations(
         ContainerBuilder $container,
         string $interface,
-        string $defaultServiceId,
-        ?string $defaultClass,
+        array $defaultServiceIds,
+        array $defaultClasses,
     ): array {
         $serviceIds = [];
 
         foreach ($container->getDefinitions() as $serviceId => $definition) {
-            if ($serviceId === $defaultServiceId) {
+            if (in_array($serviceId, $defaultServiceIds, true) || $definition->isAbstract()) {
                 continue;
             }
 
@@ -561,7 +448,7 @@ class OpenTelemetryCompilerPass implements CompilerPassInterface
                 continue;
             }
 
-            if ($defaultClass !== null && $resolvedClass === $defaultClass) {
+            if (in_array($resolvedClass, $defaultClasses, true)) {
                 continue;
             }
 

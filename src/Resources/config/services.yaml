@@ -26,4 +26,5 @@ services:
       - '../../OpenTelemetry/Attribute'
       - '../../OpenTelemetry/Helper'
       - '../../OpenTelemetry/Interfaces'
+      - '../../OpenTelemetry/Instrumentation'
       - '../../OpenTelemetry/Service/MetricsRecorder.php'

@@ -11,10 +11,11 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\HttpClient\Interfaces\{
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\{
     Attribute\InstrumentationTags,
     Helper\SpanAttributeEnricher,
+    Helper\UrlHelper,
     Validator\AutowireIteratorTypeValidator
 };
 use OpenTelemetry\API\Globals;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanKind,
     StatusCode
@@ -22,9 +23,11 @@ use OpenTelemetry\API\Trace\{
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\SemConv\Attributes\{
     ErrorAttributes,
-    HttpAttributes
+    HttpAttributes,
+    ServerAttributes,
+    UrlAttributes
 };
-use RuntimeException;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\DependencyInjection\Attribute\{
     AutowireIterator
 };
@@ -51,10 +54,11 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
      * @param iterable<HttpClientAttributeProviderInterface> $httpClientAttributeProviders
      * @param iterable<HttpClientSpanNameHandlerInterface> $httpClientSpanNameHandlers
      * @param iterable<HttpClientTraceIgnoreInterface> $httpClientTraceIgnores
+     * @param list<string> $sensitiveQueryParameters
      */
     public function __construct(
         private HttpClientInterface $client,
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::HTTP_CLIENT_ATTRIBUTE_PROVIDER)]
         private readonly iterable $httpClientAttributeProviders = [],
         #[AutowireIterator(InstrumentationTags::HTTP_CLIENT_SPAN_NAME_HANDLER)]
@@ -62,6 +66,7 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
         #[AutowireIterator(InstrumentationTags::HTTP_CLIENT_TRACE_IGNORE)]
         private readonly iterable $httpClientTraceIgnores = [],
         private readonly ?HttpClientMetricsInterface $httpClientMetrics = null,
+        private readonly array $sensitiveQueryParameters = UrlHelper::DEFAULT_SENSITIVE_QUERY_PARAMETERS,
     ) {
         AutowireIteratorTypeValidator::validate(
             argumentName: '$httpClientAttributeProviders',
@@ -87,7 +92,8 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
      */
     public function request(string $method, string $url, array $options = []): ResponseInterface
     {
-        $spanName = sprintf('%s %s', $method, $url);
+        // semantic conventions: the URL has high cardinality and may contain secrets
+        $spanName = $method;
 
         $startTime = hrtime(true);
 
@@ -101,14 +107,15 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
             }
         }
 
-        $spanNameBuilder = $spanName === '' ? 'unknown' : $spanName;
+        /** @var non-empty-string $spanNameBuilder */
+        $spanNameBuilder = $spanName === '' ? ($method !== '' ? $method : 'HTTP') : $spanName;
 
         $spanBuilder = $this->instrumentation
             ->tracer()
             ->spanBuilder($spanNameBuilder)
             ->setSpanKind(SpanKind::KIND_CLIENT)
             ->setAttribute(HttpAttributes::HTTP_REQUEST_METHOD, $method)
-            ->setAttribute('url.full', $url);
+            ->setAttribute(UrlAttributes::URL_FULL, UrlHelper::sanitize($url, $this->sensitiveQueryParameters));
 
         foreach (self::resolveDependencyAttributes($url) as $attributeName => $attributeValue) {
             $spanBuilder->setAttribute($attributeName, $attributeValue);
@@ -126,11 +133,30 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
         $scope = $context->activate();
 
         $headers = $options['headers'] ?? [];
-        Globals::propagator()->inject($headers, null, $context);
-        $options['headers'] = $headers;
+        if (is_array($headers)) {
+            Globals::propagator()->inject($headers, null, $context);
+            $options['headers'] = $headers;
+        }
 
         $isEnded = false;
-        $passthru = function (ChunkInterface $chunk, AsyncContext $context) use ($span, $startTime, $method, $url, $options, &$isEnded) {
+        $httpClientMetrics = $this->httpClientMetrics;
+
+        $endWithError = static function (Throwable $e) use ($span, $startTime, $method, $url, $options, $httpClientMetrics, &$isEnded): void {
+            if ($isEnded) {
+                return;
+            }
+
+            $isEnded = true;
+            $durationMs = (hrtime(true) - $startTime) / 1_000_000;
+            $httpClientMetrics?->recordError($method, $url, $options, $e, $durationMs);
+
+            $span->setAttribute(ErrorAttributes::ERROR_TYPE, $e::class);
+            $span->recordException($e);
+            $span->setStatus(StatusCode::STATUS_ERROR, $e->getMessage());
+            $span->end();
+        };
+
+        $passthru = static function (ChunkInterface $chunk, AsyncContext $asyncContext) use ($span, $startTime, $method, $url, $options, $httpClientMetrics, $endWithError, &$isEnded) {
             if ($isEnded) {
                 yield $chunk;
 
@@ -140,21 +166,14 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
             $scope = $span->storeInContext(Context::getCurrent())->activate();
 
             try {
+                // error chunks throw on isLast(), so getError() is checked first
                 $errorMessage = $chunk->getError();
                 if ($errorMessage !== null) {
-                    $e = new RuntimeException($errorMessage);
-                    $durationMs = (hrtime(true) - $startTime) / 1_000_000;
-                    $this->httpClientMetrics?->recordError($method, $url, $options, $e, $durationMs);
-
-                    $span->setAttribute(ErrorAttributes::ERROR_TYPE, $e::class);
-                    $span->recordException($e);
-                    $span->setStatus(StatusCode::STATUS_ERROR);
-                }
-
-                if ($chunk->isLast()) {
+                    $endWithError(new TransportException($errorMessage));
+                } elseif ($chunk->isLast()) {
                     $isEnded = true;
                     /** @var array<string, mixed> $info */
-                    $info = $context->getInfo();
+                    $info = $asyncContext->getInfo();
                     $statusCode = 0;
                     if (isset($info['http_code']) && is_scalar($info['http_code'])) {
                         $statusCode = (int) $info['http_code'];
@@ -162,27 +181,26 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
 
                     $durationMs = (hrtime(true) - $startTime) / 1_000_000;
 
-                    if ($statusCode !== 0 && $span->isRecording()) {
+                    if ($statusCode !== 0) {
                         $span->setAttribute(HttpAttributes::HTTP_RESPONSE_STATUS_CODE, $statusCode);
 
                         if ($statusCode >= 500) {
                             $span->setAttribute(ErrorAttributes::ERROR_TYPE, (string) $statusCode);
                             $span->setStatus(StatusCode::STATUS_ERROR);
                         }
-
-                        $this->httpClientMetrics?->recordRequest($method, $url, $options, $info, $durationMs);
                     }
+
+                    $httpClientMetrics?->recordRequest($method, $url, $options, $info, $durationMs);
 
                     $span->end();
                 }
             } catch (Throwable $e) {
-                $span->setAttribute(ErrorAttributes::ERROR_TYPE, $e::class);
-                $span->recordException($e);
-                $span->setStatus(StatusCode::STATUS_ERROR);
+                $endWithError($e);
             } finally {
                 $scope->detach();
-                yield $chunk;
             }
+
+            yield $chunk;
         };
 
         try {
@@ -191,17 +209,7 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
 
             return $response;
         } catch (Throwable $e) {
-            if (!$isEnded) {
-                $isEnded = true;
-                $durationMs = (hrtime(true) - $startTime) / 1_000_000;
-                $this->httpClientMetrics?->recordError($method, $url, $options, $e, $durationMs);
-
-                $span->setAttribute(ErrorAttributes::ERROR_TYPE, $e::class);
-                $span->recordException($e);
-                $span->setStatus(StatusCode::STATUS_ERROR);
-                $span->end();
-            }
-
+            $endWithError($e);
             $scope->detach();
 
             throw $e;
@@ -223,12 +231,12 @@ final class HttpTracingMiddleware implements HttpClientInterface, ResetInterface
         /** @var array{host?: string, scheme?: string, port?: int|string} $parts */
         $host = $parts['host'] ?? '';
         if ($host !== '') {
-            $attributes['server.address'] = $host;
+            $attributes[ServerAttributes::SERVER_ADDRESS] = $host;
         }
 
         $port = self::resolvePort($url, $parts);
         if ($port !== null) {
-            $attributes['server.port'] = $port;
+            $attributes[ServerAttributes::SERVER_PORT] = $port;
         }
 
         return $attributes;

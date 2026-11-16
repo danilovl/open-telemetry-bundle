@@ -23,15 +23,19 @@ final readonly class DefaultMessengerMetrics implements MessengerMetricsInterfac
     /**
      * @param array<string, mixed> $messagingAttributes
      */
-    public function recordMessage(object $message, string $operation, array $messagingAttributes, float $durationMs): void
-    {
+    public function recordMessage(
+        object $message,
+        string $operation,
+        array $messagingAttributes,
+        float $durationMs,
+    ): void {
         if (!$this->isEnable) {
             return;
         }
 
         $attributes = [
             'messaging.message.type' => $message::class,
-            'messaging.operation' => $operation,
+            'messaging.operation.name' => $operation,
             ...$messagingAttributes,
         ];
 
@@ -59,15 +63,20 @@ final readonly class DefaultMessengerMetrics implements MessengerMetricsInterfac
     /**
      * @param array<string, mixed> $messagingAttributes
      */
-    public function recordError(object $message, string $operation, array $messagingAttributes, Throwable $exception, float $durationMs): void
-    {
+    public function recordError(
+        object $message,
+        string $operation,
+        array $messagingAttributes,
+        Throwable $exception,
+        float $durationMs,
+    ): void {
         if (!$this->isEnable) {
             return;
         }
 
         $attributes = [
             'messaging.message.type' => $message::class,
-            'messaging.operation' => $operation,
+            'messaging.operation.name' => $operation,
             ...$messagingAttributes,
             'error.type' => $exception::class,
         ];

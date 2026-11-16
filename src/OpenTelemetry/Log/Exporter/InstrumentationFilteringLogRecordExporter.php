@@ -3,8 +3,14 @@
 namespace Danilovl\OpenTelemetryBundle\OpenTelemetry\Log\Exporter;
 
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Log\LogRecordExporterInterface;
-use OpenTelemetry\SDK\Logs\{LogRecordExporterInterface as SdkLogRecordExporterInterface, ReadableLogRecord};
-use OpenTelemetry\SDK\Common\Future\{CancellationInterface, FutureInterface};
+use OpenTelemetry\SDK\Logs\{
+    LogRecordExporterInterface as SdkLogRecordExporterInterface,
+    ReadableLogRecord
+};
+use OpenTelemetry\SDK\Common\Future\{
+    CancellationInterface,
+    FutureInterface
+};
 
 /**
  * Decorator that filters log records by instrumentation scope before delegating

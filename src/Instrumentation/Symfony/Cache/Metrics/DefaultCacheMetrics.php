@@ -27,8 +27,8 @@ final readonly class DefaultCacheMetrics implements CacheMetricsInterface
         }
 
         $attributes = [
+            // no cache.key: unbounded cardinality
             'cache.operation' => 'get',
-            'cache.key' => $key,
             'cache.hit' => $hit,
         ];
 
@@ -56,8 +56,6 @@ final readonly class DefaultCacheMetrics implements CacheMetricsInterface
         }
 
         $attributes = [
-            'cache.operation' => 'get',
-            'cache.key' => $key,
             'error.type' => $exception::class,
         ];
 

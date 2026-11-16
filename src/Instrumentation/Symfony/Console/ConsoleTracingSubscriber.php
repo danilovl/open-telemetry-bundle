@@ -11,7 +11,7 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\Interfaces\{
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\SpanAttributeEnricher;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind,
@@ -61,7 +61,7 @@ final class ConsoleTracingSubscriber implements EventSubscriberInterface
      * @param ConsoleMetricsInterface|null $consoleMetrics
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::CONSOLE_ATTRIBUTE_PROVIDER)]
         private readonly iterable $attributeProviders = [],
         #[AutowireIterator(InstrumentationTags::CONSOLE_SPAN_NAME_HANDLER)]

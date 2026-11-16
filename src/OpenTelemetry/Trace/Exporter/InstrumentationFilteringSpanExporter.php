@@ -3,8 +3,14 @@
 namespace Danilovl\OpenTelemetryBundle\OpenTelemetry\Trace\Exporter;
 
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Trace\TraceSpanExporterInterface;
-use OpenTelemetry\SDK\Trace\{SpanDataInterface, SpanExporterInterface};
-use OpenTelemetry\SDK\Common\Future\{CancellationInterface, FutureInterface};
+use OpenTelemetry\SDK\Trace\{
+    SpanDataInterface,
+    SpanExporterInterface
+};
+use OpenTelemetry\SDK\Common\Future\{
+    CancellationInterface,
+    FutureInterface
+};
 
 /**
  * Decorator that filters spans by instrumentation scope before delegating

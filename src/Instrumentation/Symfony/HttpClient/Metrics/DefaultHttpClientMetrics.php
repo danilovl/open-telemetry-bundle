@@ -32,10 +32,14 @@ final readonly class DefaultHttpClientMetrics implements HttpClientMetricsInterf
         }
 
         $attributes = [
-            'http.method' => $method,
-            'http.host' => (string) parse_url($url, PHP_URL_HOST),
-            'http.status_code' => $statusCode,
+            'http.request.method' => $method,
+            'server.address' => (string) parse_url($url, PHP_URL_HOST),
+            'http.response.status_code' => $statusCode,
         ];
+
+        if ($statusCode >= 500) {
+            $attributes['error.type'] = (string) $statusCode;
+        }
 
         $this->metricsRecorder->addCounter(
             name: 'http.client.requests_total',
@@ -44,10 +48,11 @@ final readonly class DefaultHttpClientMetrics implements HttpClientMetricsInterf
         );
 
         $this->metricsRecorder->recordHistogram(
-            name: 'http.client.duration_ms',
-            amount: $durationMs,
+            name: 'http.client.request.duration',
+            amount: $durationMs / 1_000,
             attributes: $attributes,
-            unit: 'ms'
+            unit: 's',
+            description: 'Duration of HTTP client requests.'
         );
 
         $this->metricsRecorder->recordGauge(
@@ -58,15 +63,20 @@ final readonly class DefaultHttpClientMetrics implements HttpClientMetricsInterf
         );
     }
 
-    public function recordError(string $method, string $url, array $options, Throwable $exception, float $durationMs): void
-    {
+    public function recordError(
+        string $method,
+        string $url,
+        array $options,
+        Throwable $exception,
+        float $durationMs,
+    ): void {
         if (!$this->isEnable) {
             return;
         }
 
         $attributes = [
-            'http.method' => $method,
-            'http.host' => (string) parse_url($url, PHP_URL_HOST),
+            'http.request.method' => $method,
+            'server.address' => (string) parse_url($url, PHP_URL_HOST),
             'error.type' => $exception::class,
         ];
 
@@ -83,10 +93,11 @@ final readonly class DefaultHttpClientMetrics implements HttpClientMetricsInterf
         );
 
         $this->metricsRecorder->recordHistogram(
-            name: 'http.client.duration_ms',
-            amount: $durationMs,
+            name: 'http.client.request.duration',
+            amount: $durationMs / 1_000,
             attributes: $attributes,
-            unit: 'ms'
+            unit: 's',
+            description: 'Duration of HTTP client requests.'
         );
 
         $this->metricsRecorder->recordGauge(

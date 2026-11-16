@@ -5,10 +5,7 @@ namespace Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\Interfaces\LongRunningCommandInterface;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Globals;
-use OpenTelemetry\SDK\Trace\TracerProviderInterface as SdkTracerProviderInterface;
-use OpenTelemetry\SDK\Metrics\MeterProviderInterface;
-use OpenTelemetry\SDK\Logs\LoggerProviderInterface;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Service\TelemetryFlusher;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
@@ -26,6 +23,7 @@ final class MessengerFlushSubscriber implements EventSubscriberInterface
      * @param iterable<LongRunningCommandInterface> $longRunningCommands
      */
     public function __construct(
+        private readonly TelemetryFlusher $flusher,
         #[AutowireIterator(InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND)]
         private readonly iterable $longRunningCommands = [],
     ) {
@@ -77,19 +75,6 @@ final class MessengerFlushSubscriber implements EventSubscriberInterface
             return;
         }
 
-        $tracerProvider = Globals::tracerProvider();
-        if ($tracerProvider instanceof SdkTracerProviderInterface) {
-            $tracerProvider->forceFlush();
-        }
-
-        $meterProvider = Globals::meterProvider();
-        if ($meterProvider instanceof MeterProviderInterface) {
-            $meterProvider->forceFlush();
-        }
-
-        $loggerProvider = Globals::loggerProvider();
-        if ($loggerProvider instanceof LoggerProviderInterface) {
-            $loggerProvider->forceFlush();
-        }
+        $this->flusher->flush();
     }
 }

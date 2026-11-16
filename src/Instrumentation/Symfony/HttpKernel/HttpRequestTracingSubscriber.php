@@ -13,10 +13,11 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\{
     SpanAttributeEnricher,
     UrlHelper
 };
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Propagator\HeaderBagPropagationGetter;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Trace\{
-    SpanInterface,
     SpanKind,
     StatusCode
 };
@@ -50,6 +51,9 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
 {
     public const string INSTRUMENTATION_NAME = 'danilovl.http_server';
 
+    /** Route template for HttpServerMetricsInterface implementations. */
+    public const string ROUTE_TEMPLATE_ATTRIBUTE = '_danilovl_otel_http_route';
+
     /**
      * @var WeakMap<Request, RequestTracingContext>
      */
@@ -59,9 +63,10 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
      * @param iterable<HttpRequestAttributeProviderInterface> $requestAttributeProviders
      * @param iterable<HttpRequestSpanNameHandlerInterface> $httpRequestSpanNameHandlers
      * @param iterable<HttpRequestTraceIgnoreInterface> $httpRequestTraceIgnores
+     * @param list<string> $sensitiveQueryParameters
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         private readonly ?RouterInterface $router = null,
         #[AutowireIterator(InstrumentationTags::HTTP_REQUEST_ATTRIBUTE_PROVIDER)]
         private readonly iterable $requestAttributeProviders = [],
@@ -70,6 +75,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         #[AutowireIterator(InstrumentationTags::HTTP_REQUEST_TRACE_IGNORE)]
         private readonly iterable $httpRequestTraceIgnores = [],
         private readonly ?HttpServerMetricsInterface $httpServerMetrics = null,
+        private readonly array $sensitiveQueryParameters = UrlHelper::DEFAULT_SENSITIVE_QUERY_PARAMETERS,
     ) {
         AutowireIteratorTypeValidator::validate(
             argumentName: '$requestAttributeProviders',
@@ -113,8 +119,10 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         $request = $event->getRequest();
+        $method = $request->getMethod();
 
-        $spanName = sprintf('%s %s', $request->getMethod(), $request->getPathInfo());
+        // no raw path: high cardinality, may contain secrets
+        $spanName = $method;
 
         foreach ($this->httpRequestSpanNameHandlers as $httpRequestSpanNameHandler) {
             $spanName = $httpRequestSpanNameHandler->process($spanName, $event);
@@ -127,27 +135,34 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         /** @var non-empty-string $spanNameBuilder */
-        $spanNameBuilder = $spanName === '' ? 'http server request' : $spanName;
+        $spanNameBuilder = $spanName === '' ? $method : $spanName;
 
         $protocolVersion = $request->getProtocolVersion();
         $protocolVersion = $protocolVersion !== null ? strtr($protocolVersion, ['HTTP/' => '']) : null;
 
+        $parentContext = Globals::propagator()->extract(
+            $request->headers,
+            HeaderBagPropagationGetter::getInstance(),
+            Context::getCurrent()
+        );
+
         $span = $this->instrumentation
             ->tracer()
             ->spanBuilder($spanNameBuilder)
+            ->setParent($parentContext)
             ->setSpanKind(SpanKind::KIND_SERVER)
-            ->setAttribute(UrlAttributes::URL_FULL, UrlHelper::sanitize($request->getUri()))
-            ->setAttribute(HttpAttributes::HTTP_REQUEST_METHOD, $request->getMethod())
-            ->setAttribute(HttpIncubatingAttributes::HTTP_REQUEST_BODY_SIZE, $request->headers->get('Content-Length'))
+            ->setAttribute(UrlAttributes::URL_FULL, UrlHelper::sanitize($request->getUri(), $this->sensitiveQueryParameters))
+            ->setAttribute(HttpAttributes::HTTP_REQUEST_METHOD, $method)
+            ->setAttribute(HttpIncubatingAttributes::HTTP_REQUEST_BODY_SIZE, $this->resolveContentLength($request))
             ->setAttribute(UrlAttributes::URL_SCHEME, $request->getScheme())
             ->setAttribute(UrlAttributes::URL_PATH, $request->getPathInfo())
             ->setAttribute(UserAgentAttributes::USER_AGENT_ORIGINAL, $request->headers->get('User-Agent'))
             ->setAttribute(ServerAttributes::SERVER_ADDRESS, $request->getHost())
             ->setAttribute(ServerAttributes::SERVER_PORT, $request->getPort())
             ->setAttribute(NetworkAttributes::NETWORK_PROTOCOL_VERSION, $protocolVersion)
-            ->setAttribute(NetworkAttributes::NETWORK_PEER_ADDRESS, $request->getClientIp())
-            ->setAttribute(ClientAttributes::CLIENT_ADDRESS, $request->server->get('REMOTE_HOST'))
-            ->setAttribute(ClientAttributes::CLIENT_PORT, $request->server->get('REMOTE_PORT'))
+            ->setAttribute(ClientAttributes::CLIENT_ADDRESS, $request->getClientIp())
+            ->setAttribute(NetworkAttributes::NETWORK_PEER_ADDRESS, $request->server->get('REMOTE_ADDR'))
+            ->setAttribute(NetworkAttributes::NETWORK_PEER_PORT, $this->resolvePeerPort($request))
             ->startSpan();
 
         SpanAttributeEnricher::enrich(
@@ -156,8 +171,7 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             context: ['request' => $request, 'event' => $event]
         );
 
-        $context = $span->storeInContext(Context::getCurrent());
-        $scope = Context::storage()->attach($context);
+        $scope = Context::storage()->attach($span->storeInContext($parentContext));
 
         $this->contextMap[$request] = new RequestTracingContext(
             span: $span,
@@ -179,22 +193,31 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             return;
         }
 
-        $route = $request->attributes->get('_route');
-        $routePath = is_string($route) && $route !== ''
-            ? $this->router?->getRouteCollection()->get($route)?->getPath()
+        $routeName = $request->attributes->get('_route');
+        $routeTemplate = is_string($routeName) && $routeName !== ''
+            ? $this->router?->getRouteCollection()->get($routeName)?->getPath()
             : null;
 
-        $spanName = sprintf('%s %s', $request->getMethod(), $routePath ?: $request->getPathInfo());
-        $context->span->updateName($spanName);
-        $context->span->setAttribute(HttpAttributes::HTTP_ROUTE, is_string($route) ? $route : 'unknown');
+        if (is_string($routeName) && $routeName !== '') {
+            $context->span->setAttribute('symfony.route.name', $routeName);
+        }
+
+        if (!is_string($routeTemplate) || $routeTemplate === '') {
+            return;
+        }
+
+        $request->attributes->set(self::ROUTE_TEMPLATE_ATTRIBUTE, $routeTemplate);
+
+        $context->span->updateName(sprintf('%s %s', $request->getMethod(), $routeTemplate));
+        $context->span->setAttribute(HttpAttributes::HTTP_ROUTE, $routeTemplate);
     }
 
     public function onException(ExceptionEvent $event): void
     {
         $request = $event->getRequest();
-        $span = ($this->contextMap[$request] ?? null)?->span;
+        $context = $this->contextMap[$request] ?? null;
 
-        if (!$span instanceof SpanInterface) {
+        if (!$context instanceof RequestTracingContext) {
             return;
         }
 
@@ -204,9 +227,10 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
             return;
         }
 
-        $span->setAttribute(ErrorAttributes::ERROR_TYPE, $exception::class);
-        $span->recordException($exception);
-        $span->setStatus(
+        $context->exceptionRecorded = true;
+        $context->span->setAttribute(ErrorAttributes::ERROR_TYPE, $exception::class);
+        $context->span->recordException($exception);
+        $context->span->setStatus(
             code: StatusCode::STATUS_ERROR,
             description: $exception->getMessage()
         );
@@ -221,22 +245,22 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         $request = $event->getRequest();
-        $response = $event->getResponse();
-        $span = ($this->contextMap[$request] ?? null)?->span;
+        $context = $this->contextMap[$request] ?? null;
 
-        if (!$span instanceof SpanInterface) {
+        if (!$context instanceof RequestTracingContext) {
             return;
         }
 
-        $statusCode = $response->getStatusCode();
-        $span->setAttribute(HttpAttributes::HTTP_RESPONSE_STATUS_CODE, $statusCode);
+        $statusCode = $event->getResponse()->getStatusCode();
+        $context->span->setAttribute(HttpAttributes::HTTP_RESPONSE_STATUS_CODE, $statusCode);
 
-        if ($statusCode >= 500) {
-            $span->setAttribute(ErrorAttributes::ERROR_TYPE, (string) $statusCode);
-            $span->setStatus(StatusCode::STATUS_ERROR);
+        // keep the exception class set in onException()
+        if ($statusCode >= 500 && !$context->exceptionRecorded) {
+            $context->span->setAttribute(ErrorAttributes::ERROR_TYPE, (string) $statusCode);
+            $context->span->setStatus(StatusCode::STATUS_ERROR);
         }
 
-        $this->recordRequestMetrics($request, $response->getStatusCode());
+        $this->recordRequestMetrics($request, $context, $statusCode);
     }
 
     public function onTerminate(TerminateEvent $event): void
@@ -246,44 +270,46 @@ final class HttpRequestTracingSubscriber implements EventSubscriberInterface
         }
 
         $request = $event->getRequest();
-        $span = ($this->contextMap[$request] ?? null)?->span;
-
-        if (!$span instanceof SpanInterface) {
-            return;
-        }
-
-        $span->setAttribute(HttpAttributes::HTTP_RESPONSE_STATUS_CODE, $event->getResponse()->getStatusCode());
-
-        $this->recordRequestMetrics($request, $event->getResponse()->getStatusCode());
-
-        $this->finishSpan($request);
-    }
-
-    private function recordRequestMetrics(Request $request, int $statusCode): void
-    {
-        $startTime = ($this->contextMap[$request] ?? null)?->startTime;
-
-        if (!is_numeric($startTime)) {
-            return;
-        }
-
-        $durationMs = (hrtime(true) - $startTime) / 1_000_000;
-
-        $this->httpServerMetrics?->recordRequest($request, $statusCode, $durationMs);
-    }
-
-    private function finishSpan(Request $request): void
-    {
         $context = $this->contextMap[$request] ?? null;
 
         if (!$context instanceof RequestTracingContext) {
-            Context::storage()->scope()?->detach();
-
             return;
         }
+
+        $statusCode = $event->getResponse()->getStatusCode();
+        $context->span->setAttribute(HttpAttributes::HTTP_RESPONSE_STATUS_CODE, $statusCode);
+
+        // fallback when kernel.response was not dispatched
+        $this->recordRequestMetrics($request, $context, $statusCode);
 
         $context->finish();
 
         unset($this->contextMap[$request]);
+    }
+
+    private function recordRequestMetrics(Request $request, RequestTracingContext $context, int $statusCode): void
+    {
+        if ($context->metricsRecorded) {
+            return;
+        }
+
+        $context->metricsRecorded = true;
+        $durationMs = (hrtime(true) - $context->startTime) / 1_000_000;
+
+        $this->httpServerMetrics?->recordRequest($request, $statusCode, $durationMs);
+    }
+
+    private function resolveContentLength(Request $request): ?int
+    {
+        $contentLength = $request->headers->get('Content-Length');
+
+        return is_numeric($contentLength) ? (int) $contentLength : null;
+    }
+
+    private function resolvePeerPort(Request $request): ?int
+    {
+        $port = $request->server->get('REMOTE_PORT');
+
+        return is_numeric($port) ? (int) $port : null;
     }
 }

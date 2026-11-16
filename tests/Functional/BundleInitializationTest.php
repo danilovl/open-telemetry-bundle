@@ -11,8 +11,11 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\Middleware\TracingDbal
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\SpanNameHandler\DefaultDoctrineSpanNameHandler;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\TraceIgnore\DefaultDoctrineTraceIgnore;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Redis\{
-    TracingPhpRedis
+    PhpRedisHookInstrumentation,
+    RedisHookSubscriber
 };
+use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Messenger\LongRunningCommand\DefaultLongRunningCommand;
+use Danilovl\OpenTelemetryBundle\Tests\Mock\DependencyInjection\TestableOpenTelemetryExtension;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Cache\TracingCachePool;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Console\ConsoleTracingSubscriber;
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\EventDispatcher\SpanNameHandler\DefaultEventSpanNameHandler;
@@ -31,7 +34,6 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Traceable\{
     TraceableSubscriber
 };
 use Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Twig\TraceableTwigExtension;
-use Danilovl\OpenTelemetryBundle\OpenTelemetry\Attribute\InstrumentationTags;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\{
     TracingSpanServiceInterface
 };
@@ -56,7 +58,9 @@ class BundleInitializationTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->extension = new OpenTelemetryExtension;
+        $extension = new TestableOpenTelemetryExtension;
+        $extension->hookApiOverride = true;
+        $this->extension = $extension;
     }
 
     /**
@@ -344,7 +348,7 @@ class BundleInitializationTest extends TestCase
             'expectedServices' => [
                 MessageBusTracingMiddleware::class,
                 MessengerFlushSubscriber::class,
-                InstrumentationTags::MESSENGER_LONG_RUNNING_COMMAND . '.default'
+                DefaultLongRunningCommand::class
             ],
         ];
 
@@ -376,7 +380,8 @@ class BundleInitializationTest extends TestCase
                 ],
             ],
             'expectedServices' => [
-                TracingPhpRedis::class,
+                PhpRedisHookInstrumentation::class,
+                RedisHookSubscriber::class,
                 TracingCachePool::class
             ]
         ];

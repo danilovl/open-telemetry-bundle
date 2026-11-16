@@ -17,7 +17,7 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Helper\{
     TracingHelper
 };
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Validator\AutowireIteratorTypeValidator;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind,
@@ -27,6 +27,7 @@ use OpenTelemetry\Context\{
     Context,
     ContextStorageScopeInterface
 };
+use Closure;
 use ReflectionClass;
 use ReflectionMethod;
 use Symfony\Component\Console\ConsoleEvents;
@@ -41,6 +42,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\{
     ControllerEvent,
     ExceptionEvent,
+    FinishRequestEvent,
     TerminateEvent
 };
 use Symfony\Component\HttpKernel\KernelEvents;
@@ -71,7 +73,7 @@ final class TraceableSubscriber implements EventSubscriberInterface
      * @param iterable<TraceableTraceIgnoreInterface> $traceableTraceIgnores
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::TRACEABLE_ATTRIBUTE_PROVIDER)]
         private readonly iterable $attributeProviders = [],
         #[AutowireIterator(InstrumentationTags::TRACEABLE_SPAN_NAME_HANDLER)]
@@ -108,6 +110,7 @@ final class TraceableSubscriber implements EventSubscriberInterface
         return [
             KernelEvents::CONTROLLER => ['onController', 50],
             KernelEvents::EXCEPTION => ['onHttpException', 10],
+            KernelEvents::FINISH_REQUEST => ['onFinishRequest', -50],
             KernelEvents::TERMINATE => ['onHttpTerminate', -50],
             ConsoleEvents::COMMAND => ['onConsoleCommand', 50],
             ConsoleEvents::ERROR => ['onConsoleError', 0],
@@ -184,6 +187,20 @@ final class TraceableSubscriber implements EventSubscriberInterface
         $span->setStatus(StatusCode::STATUS_ERROR, $throwable->getMessage());
     }
 
+    /** Also covers sub-requests, which have no kernel.terminate. */
+    public function onFinishRequest(FinishRequestEvent $event): void
+    {
+        $request = $event->getRequest();
+        $context = $this->contextMap[$request] ?? null;
+
+        if (!$context instanceof TraceableTracingContext) {
+            return;
+        }
+
+        $context->finish();
+        unset($this->contextMap[$request]);
+    }
+
     public function onHttpTerminate(TerminateEvent $event): void
     {
         $context = $this->contextMap[$event->getRequest()] ?? null;
@@ -193,6 +210,7 @@ final class TraceableSubscriber implements EventSubscriberInterface
         }
 
         $context->finish();
+        unset($this->contextMap[$event->getRequest()]);
     }
 
     public function onConsoleCommand(ConsoleCommandEvent $event): void
@@ -293,22 +311,30 @@ final class TraceableSubscriber implements EventSubscriberInterface
         unset($this->commandSpans[$key], $this->commandScopes[$key]);
     }
 
+    /** Method attribute wins over class attribute, same as TraceableHookCompilerPass. */
     private function resolveControllerTraceable(mixed $controller): ?Traceable
     {
         if (is_array($controller) && isset($controller[0], $controller[1]) && is_object($controller[0]) && is_string($controller[1])) {
-            $reflectionClass = new ReflectionClass($controller[0]);
-            $classTraceable = $this->resolveClassTraceable($reflectionClass);
+            [$object, $methodName] = $controller;
+        } elseif (is_object($controller) && !$controller instanceof Closure) {
+            // invokable controller
+            $object = $controller;
+            $methodName = '__invoke';
+        } else {
+            return null;
+        }
 
-            if ($classTraceable instanceof Traceable) {
-                return $classTraceable;
-            }
+        $reflectionClass = new ReflectionClass($object);
 
-            if ($reflectionClass->hasMethod($controller[1])) {
-                return $this->resolveMethodTraceable($reflectionClass->getMethod($controller[1]));
+        if ($reflectionClass->hasMethod($methodName)) {
+            $methodTraceable = $this->resolveMethodTraceable($reflectionClass->getMethod($methodName));
+
+            if ($methodTraceable instanceof Traceable) {
+                return $methodTraceable;
             }
         }
 
-        return null;
+        return $this->resolveClassTraceable($reflectionClass);
     }
 
     /**

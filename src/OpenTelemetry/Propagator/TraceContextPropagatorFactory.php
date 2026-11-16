@@ -5,9 +5,8 @@ namespace Danilovl\OpenTelemetryBundle\OpenTelemetry\Propagator;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\PropagatorFactoryInterface;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\Context\Propagation\TextMapPropagatorInterface;
-use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 
-#[AsAlias(PropagatorFactoryInterface::class)]
+/** Alias PropagatorFactoryInterface to this class to ignore OTEL_PROPAGATORS. */
 final class TraceContextPropagatorFactory implements PropagatorFactoryInterface
 {
     public function create(): TextMapPropagatorInterface

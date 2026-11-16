@@ -11,7 +11,7 @@ use Danilovl\OpenTelemetryBundle\Instrumentation\Doctrine\Interfaces\{
 };
 use Doctrine\DBAL\Driver;
 use Doctrine\DBAL\Driver\Middleware;
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 final class TracingDbalMiddleware implements Middleware
@@ -23,12 +23,13 @@ final class TracingDbalMiddleware implements Middleware
      * @param DoctrineTraceIgnoreInterface[] $doctrineTraceIgnores
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::DOCTRINE_SPAN_NAME_HANDLER)]
         private readonly iterable $doctrineSpanNameHandlers = [],
         #[AutowireIterator(InstrumentationTags::DOCTRINE_TRACE_IGNORE)]
         private readonly iterable $doctrineTraceIgnores = [],
         private readonly ?DoctrineMetricsInterface $doctrineMetrics = null,
+        private readonly bool $sanitizeSql = true,
     ) {
         AutowireIteratorTypeValidator::validate(
             argumentName: '$doctrineSpanNameHandlers',
@@ -51,6 +52,7 @@ final class TracingDbalMiddleware implements Middleware
             doctrineSpanNameHandlers: $this->doctrineSpanNameHandlers,
             doctrineTraceIgnores: $this->doctrineTraceIgnores,
             doctrineMetrics: $this->doctrineMetrics,
+            sanitizeSql: $this->sanitizeSql,
         );
     }
 }

@@ -6,17 +6,27 @@ use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\Log\LogRecordExporterI
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Interfaces\LoggerProviderFactoryInterface;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Resource\DefaultResourceInfoFactory;
 use Danilovl\OpenTelemetryBundle\OpenTelemetry\Log\Exporter\InstrumentationFilteringLogRecordExporter;
-use OpenTelemetry\Contrib\Otlp\LogsExporterFactory;
+use OpenTelemetry\API\Behavior\LogsMessagesTrait;
+use OpenTelemetry\API\Common\Time\SystemClock;
 use OpenTelemetry\SDK\Logs\{
+    ExporterFactory,
     LoggerProvider,
     LoggerProviderInterface,
     LogRecordExporterInterface,
-    LogRecordProcessorInterface
+    LogRecordProcessorFactory,
+    LogRecordProcessorInterface,
+    NoopLoggerProvider
 };
-use OpenTelemetry\SDK\Logs\Processor\SimpleLogRecordProcessor;
+use OpenTelemetry\SDK\Logs\Exporter\NoopExporter;
+use OpenTelemetry\SDK\Logs\Processor\BatchLogRecordProcessor;
+use OpenTelemetry\SDK\Sdk;
+use Throwable;
 
+/** Honours OTEL_SDK_DISABLED, OTEL_LOGS_EXPORTER and OTEL_PHP_LOGS_PROCESSOR (batch by default). */
 final readonly class DefaultLoggerProviderFactory implements LoggerProviderFactoryInterface
 {
+    use LogsMessagesTrait;
+
     public function __construct(private DefaultResourceInfoFactory $resourceInfoFactory) {}
 
     /**
@@ -25,13 +35,17 @@ final readonly class DefaultLoggerProviderFactory implements LoggerProviderFacto
      */
     public function create(iterable $processors = [], iterable $exporters = []): LoggerProviderInterface
     {
-        $resource = $this->resourceInfoFactory->createResource();
-        $exporter = (new LogsExporterFactory)->create();
-        $defaultProcessor = new SimpleLogRecordProcessor($exporter);
+        if (Sdk::isDisabled()) {
+            return new NoopLoggerProvider;
+        }
 
         $builder = LoggerProvider::builder()
-            ->addLogRecordProcessor($defaultProcessor)
-            ->setResource($resource);
+            ->setResource($this->resourceInfoFactory->createResource());
+
+        $defaultExporter = $this->createDefaultExporter();
+        if ($defaultExporter !== null) {
+            $builder->addLogRecordProcessor(new LogRecordProcessorFactory()->create($defaultExporter));
+        }
 
         foreach ($processors as $processor) {
             $builder->addLogRecordProcessor($processor);
@@ -42,9 +56,22 @@ final readonly class DefaultLoggerProviderFactory implements LoggerProviderFacto
                 ? new InstrumentationFilteringLogRecordExporter($logExporter)
                 : $logExporter;
 
-            $builder->addLogRecordProcessor(new SimpleLogRecordProcessor($wrappedExporter));
+            $builder->addLogRecordProcessor(new BatchLogRecordProcessor($wrappedExporter, SystemClock::create()));
         }
 
         return $builder->build();
+    }
+
+    private function createDefaultExporter(): ?LogRecordExporterInterface
+    {
+        try {
+            $exporter = new ExporterFactory()->create();
+        } catch (Throwable $throwable) {
+            self::logWarning('Unable to create the default log record exporter: ' . $throwable->getMessage());
+
+            return null;
+        }
+
+        return $exporter instanceof NoopExporter ? null : $exporter;
     }
 }

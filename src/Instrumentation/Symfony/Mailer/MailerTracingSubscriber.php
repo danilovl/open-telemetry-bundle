@@ -2,7 +2,7 @@
 
 namespace Danilovl\OpenTelemetryBundle\Instrumentation\Symfony\Mailer;
 
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind,
@@ -48,7 +48,7 @@ final class MailerTracingSubscriber implements EventSubscriberInterface
      * @param MailerMetricsInterface|null $mailerMetrics
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         #[AutowireIterator(InstrumentationTags::MAILER_SPAN_NAME_HANDLER)]
         private readonly iterable $mailerSpanNameHandlers = [],
         #[AutowireIterator(InstrumentationTags::MAILER_TRACE_IGNORE)]
@@ -82,6 +82,11 @@ final class MailerTracingSubscriber implements EventSubscriberInterface
 
     public function onMessage(MessageEvent $event): void
     {
+        // queued via Messenger: sent (and traced) later by the worker
+        if ($event->isQueued()) {
+            return;
+        }
+
         $message = $event->getMessage();
         $spanName = 'mailer send';
 

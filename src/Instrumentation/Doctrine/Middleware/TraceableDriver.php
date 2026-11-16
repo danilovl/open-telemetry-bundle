@@ -21,7 +21,7 @@ use Doctrine\DBAL\Platforms\{
     SQLServerPlatform,
     SQLitePlatform
 };
-use OpenTelemetry\API\Instrumentation\CachedInstrumentation;
+use Danilovl\OpenTelemetryBundle\OpenTelemetry\Instrumentation\ScopedInstrumentation;
 use OpenTelemetry\API\Trace\{
     SpanInterface,
     SpanKind,
@@ -51,11 +51,12 @@ final class TraceableDriver extends AbstractDriverMiddleware
      * @param DoctrineMetricsInterface|null $doctrineMetrics
      */
     public function __construct(
-        private readonly CachedInstrumentation $instrumentation,
+        private readonly ScopedInstrumentation $instrumentation,
         DriverInterface $driver,
         private readonly iterable $doctrineSpanNameHandlers = [],
         private readonly iterable $doctrineTraceIgnores = [],
         private readonly ?DoctrineMetricsInterface $doctrineMetrics = null,
+        private readonly bool $sanitizeSql = true,
     ) {
         parent::__construct($driver);
 
@@ -116,6 +117,7 @@ final class TraceableDriver extends AbstractDriverMiddleware
                 tracer: $tracer,
                 dbSystem: $dbSystem,
                 dbName: $dbName,
+                sanitizeSql: $this->sanitizeSql,
             );
         }
 
@@ -127,7 +129,6 @@ final class TraceableDriver extends AbstractDriverMiddleware
 
             $attributes = TracingHelper::normalizeAttributeValues([
                 DbAttributes::DB_NAMESPACE => $params['dbname'] ?? 'default',
-                DoctrineContextAttribute::USER->value => $params['user'] ?? 'unknown',
                 ...$dbEndpointAttributes,
             ]);
 
@@ -166,6 +167,7 @@ final class TraceableDriver extends AbstractDriverMiddleware
                 tracer: $tracer,
                 dbSystem: $dbSystem,
                 dbName: $dbName,
+                sanitizeSql: $this->sanitizeSql,
             );
         } catch (Exception $exception) {
             if ($span instanceof SpanInterface) {
@@ -245,11 +247,6 @@ final class TraceableDriver extends AbstractDriverMiddleware
         $dbNamespace = $this->asNonEmptyString($params['dbname'] ?? null);
         if ($dbNamespace !== null) {
             $attributes[DbAttributes::DB_NAMESPACE] = $dbNamespace;
-        }
-
-        $dbUser = $this->asNonEmptyString($params['user'] ?? null);
-        if ($dbUser !== null) {
-            $attributes[DoctrineContextAttribute::USER->value] = $dbUser;
         }
 
         $host = $this->resolveDbHost($params);
